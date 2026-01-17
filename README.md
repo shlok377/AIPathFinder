@@ -7,3 +7,4 @@ Google judges look for the use of their specific tools to solve global problems.
 - Project Green Light Angle: Frame your optimization as a way to reduce the "Carbon Footprint" of logistics by minimizing the total distance robots travel, thus saving energy.
 - Google AI for Social Good: Highlight how your solution can improve accessibility and efficiency in underserved areas, such as rural delivery services or disaster relief logistics.
 vjhkj
+123
