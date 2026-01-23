@@ -1,9 +1,2 @@
 the trucks in the warehouse_layout.txt are replaced with [1, 2, 3, 4] and their paths are formed with their assigned numbers as well, so the truck will only have to look for collisions at the overlaps and the junctions
 
-
-
-1. Skin walker
-2. Hollow Husk
-3. Overclocked RTX4090ti Limited Edition thermal throttled 9000MHz
-4. Caffeine Composter
-(google kari leje if you dont understand)
