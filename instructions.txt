@@ -1,0 +1,4 @@
+. = empty space / free tile (can trvel here)
+X = solid shelves (CANNOT travel here)
+# = charging docks (can travel here)
+T = initial parking position of the robot (can travel here)
