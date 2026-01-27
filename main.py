@@ -1,10 +1,6 @@
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
 import random
-from core.fleet_manager import FleetManager
-
-# Inside your main() or as a global
-fleet = FleetManager()
 
 # ==========================================
 # CONFIGURATION SECTION
