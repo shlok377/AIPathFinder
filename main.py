@@ -62,6 +62,7 @@ class AppConfig:
 # CLASSES
 # ==========================================
 
+
 class CullingSystem(Entity):
     def __init__(self, target, items_parent, distance=50, **kwargs):
         super().__init__(**kwargs)
@@ -115,32 +116,46 @@ class ChargingDock(Entity):
             self.scale = (1.8, 0.1, 1.8)
             self.color = color.green
 
+# In main.py
+
+# main.py
+
 class Robot(Entity):
-    def __init__(self, index, world_x, world_z, pair_color, **kwargs):
-        world_y = 0
-        tinted_color = lerp(color.white, pair_color, 0.1)
-        
-        super().__init__(
-            model=AppConfig.ROBOT_MODEL_FILE, 
-            position=(world_x, world_y, world_z),
-            rotation_y=0,
-            scale=AppConfig.ROBOT_SCALE,
-            color=tinted_color,
-            texture=AppConfig.ROBOT_TEXTURE_FILE,
-            **kwargs
-        )
+    def __init__(self, index, **kwargs):
+        super().__init__(...)
         self.robot_id = index
-        self.assigned_dock_id = index 
-        self.tag = f"Pair_Color_{pair_color.name}" if hasattr(pair_color, 'name') else f"Pair_{index}"
-        self.name = f"Robot_{index}"
-        
-        if not self.model:
-            self.model = 'cube'
-            self.color = color.blue
-            self.scale = (1, 1, 1)
+        self.battery = config.INITIAL_BATTERY
+        self.is_charging = False
 
     def update(self):
+        # Feature 8: Charging logic (near 1 block of any charger) 
+        self.check_charging_proximity()
+
+        if self.is_waiting or not self.moving:
+            return
+
+        if self.moving and self.path:
+            # ... (existing movement code) ...
+
+            if distance(self.position, target_pos) < 0.1:
+                # Feature 7: Drain battery over each tile 
+                self.battery -= config.BATTERY_DRAIN_PER_TILE
+                self.current_step_index += 1
+                
+                # Feature 13: Log state 
+                if self.current_step_index % 5 == 0: 
+                    print(f"[Status] Truck {self.robot_id} Battery: {self.battery:.1f}%")
+
+    def check_charging_proximity(self):
+        """Feature 8: If within 1 block of charger, fast charge """
+        # Logic to check grid for '#' within 1 tile radius
+        # If true: self.battery += config.FAST_CHARGE_RATE * time.dt
         pass
+    def follow_path(self, new_path):
+        if new_path:
+            self.path = new_path
+            self.current_step_index = 0
+            self.moving = True
 
 # ==========================================
 # MAIN APPLICATION
@@ -154,6 +169,7 @@ def load_grid(filename):
     except FileNotFoundError:
         print(f"Error: {filename} not found. Using default empty grid.")
         return ["." * AppConfig.DEFAULT_WIDTH for _ in range(AppConfig.DEFAULT_HEIGHT)]
+    
 
 def parse_map_and_spawn(grid):
     """
@@ -262,7 +278,20 @@ def parse_map_and_spawn(grid):
     return width, height, floor_parent
 
 def main():
+
     app = Ursina()
+    # In main.py inside main()
+
+    def input(key):
+        if key == 'g': # Press 'G' to start a test mission
+            # 1. Get a path from the 'Brain'
+            # Let's say we want Robot 0 to go to grid (15, 5)
+            path = fleet.get_path_to_target(fleet.truck_starts[0], (15, 5))
+            
+            # 2. Tell the Ursina Entity to follow it
+            # Assuming you stored your robot entities in a list called 'robots'
+            if path:
+                robots[0].follow_path(path) 
 
     grid = load_grid(AppConfig.LAYOUT_FILE)
     
