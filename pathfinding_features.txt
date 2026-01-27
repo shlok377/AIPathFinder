@@ -1,0 +1,43 @@
+1. Basic nearest path finding using "warehouse_layout.txt", Use @ to denote the final location (delivery location),
+
+2. Use Capital letters to denote the Trucks, small letter to denote their paths respectively,
+
+3. Make sure all the chargers are centralized and any truck can use them while they are free,
+
+4. Add checkpoints/pickup locations denoted by $, the truck should stop there for 5 seconds,
+
+5. Use the Nearest truck to the PACKAGE to deliver the package rather than nearest to the delivery location
+
+6. add a battery usage system, the truck with low battery (below the estimated amount required to deliver and return) cant go to deliver,
+
+7. the trucks uses a certain % of battery when it travels over a tile(denoted by a . in the txt file)
+
+8. if the truck is near(1 block away from any charger), the truck's battery will be charged, [prefer fast charging]
+
+9. if any charger is empty after the package is dropped and is nearest to the drop location, the truck can occupy that charging space,
+
+10. if a charging space is already a target of any of the trucks disable the above(9th) mechanic,
+
+11. make this Pathfinding mechanic extremely efficient and optimized,
+
+12. NOTE: make sure you do the pathfinding in the "warehouse_layout.txt" file, i'll update the Ursina World (Virtual Simulation) to emulate the movements happening in the txt file.
+
+13. Make sure you print all the logs, calculations, truck battery states, charging dock state (occupied or not), if the truck is delivering or delivered etc in the console
+
+Improvisation:
+
+  1. Conflict-Based Search (CBS): Instead of just A* with priorities, CBS is an optimal solver for multi-agent
+      pathfinding that resolves conflicts by splitting the search tree. It guarantees the shortest total time for all
+      agents, though it's computationally heavier.
+   2. Traffic Rules & One-Way Zones: Enforcing one-way aisles (like in real Amazon warehouses) drastically reduces
+      head-on collisions and deadlocks without complex calculation.
+   3. Task Auctioning: Instead of just "nearest truck," use a "cost-based auction" where trucks bid based on a
+      combination of distance + battery level + current workload.
+   4. Dynamic Replanning: If a robot is delayed (e.g., at a charger), other robots passing through its planned path
+      should dynamically recalculate rather than waiting indefinitely.
+"Gemini Supervisor" Integration
+Since this is a GSA hackathon, use a LLM-based Dispatcher.
+
+Natural Language Tasks: Instead of hard-coding "Truck A go to $1," allow a user to type: "We have a spill in Aisle 4, reroute the nearest high-battery truck to block that path".
+
+Gemini Log Analysis: Feed your console logs into Gemini to detect patterns, such as: "Truck B is consistently running out of battery 10 tiles before its target; suggest increasing its reserve threshold."
