@@ -1,16 +1,21 @@
 from ursina import *
 from ursina.prefabs.first_person_controller import FirstPersonController
 import random
+import os
+import shutil
+from core.pathfinder import PathFinder
+from math import atan2, pi
 
 # ==========================================
 # CONFIGURATION SECTION
-# Modify these values to change the simulation settings
 # ==========================================
 class AppConfig:
     # Files
     LAYOUT_FILE = 'warehouse_layout.txt'
+    DEFAULT_LAYOUT_FILE = 'default_layout.txt'
     ROBOT_MODEL_FILE = 'models/truckF.obj'
     ROBOT_TEXTURE_FILE = 'textures/truck.png'
+    PACKAGE_MODEL_FILE = 'models/package.fbx'
     DOCK_MODEL_FILE = 'models/dock.glb'
     SHELF_MODEL_FILE = ['models/shelf1.fbx', 'models/shelf3.fbx']
     SHELF_TEXTURE_FILE = 'textures/shelf.png'
@@ -29,6 +34,8 @@ class AppConfig:
     OBSTACLE_CHAR = 'X'
     DOCK_CHAR = '#'
     ROBOT_CHAR = 'T'
+    PICKUP_CHAR = '$'
+    DROP_CHAR = '@'
     
     # Obstacle Settings
     OBSTACLE_COLOR = color.white 
@@ -38,13 +45,13 @@ class AppConfig:
     # Robot Settings
     ROBOT_SCALE = (0.7, 0.7, 0.7) 
     ROBOT_COLOR = color.white 
+    ROBOT_MOVE_SPEED = 5
+    ROBOT_ROTATION_SPEED = 10
+    ROBOT_WAIT_TIME = 3
 
     # Charging Dock Settings
     DOCK_COLOR = color.white
     DOCK_SCALE = (0.05, 0.05, 0.05) 
-    
-    # Special Tags / Pairings
-    PAIRINGS = [] 
     
     # Optimization
     CULLING_DISTANCE = 40 
@@ -54,38 +61,22 @@ class AppConfig:
     PLAYER_START_OFFSET_Z = -20 
     MOUSE_VISIBLE = False
 
+    # Top-Down Camera Settings
+    TOP_DOWN_SPEED = 40
+    TOP_DOWN_HEIGHT = 50
+    TOP_DOWN_LIFT_SPEED = 30
+
+    # Battery Settings
+    BATTERY_DRAIN_MOVE = 1.0     # % per second while moving
+    BATTERY_DRAIN_PASSIVE = 0.1  # % per second while idling
+    BATTERY_CHARGE_RATE = 5.0    # % per second while charging
+    BATTERY_LOG_INTERVAL = 2.0   # seconds between logs
+    BATTERY_LOW_THRESHOLD = 20.0 # Refuse new tasks below this
+    BATTERY_CRITICAL_THRESHOLD = 5.0 # Forced return below this
+
 # ==========================================
 # CLASSES
 # ==========================================
-
-class CullingSystem(Entity):
-    def __init__(self, target, items_parent, distance=50, **kwargs):
-        super().__init__(**kwargs)
-        self.target = target 
-        self.items_parent = items_parent 
-        self.distance = distance
-        self.distance_sq = distance * distance 
-        self.update_interval = 0.1 
-        self.timer = 0
-
-    def update(self):
-        self.timer += time.dt
-        if self.timer < self.update_interval:
-            return
-        self.timer = 0
-        
-        target_pos_x = self.target.x
-        target_pos_z = self.target.z
-        
-        for item in self.items_parent.children:
-            dx = item.x - target_pos_x
-            dz = item.z - target_pos_z
-            dist_sq = dx*dx + dz*dz
-            
-            should_be_enabled = dist_sq < self.distance_sq
-            
-            if item.enabled != should_be_enabled:
-                item.enabled = should_be_enabled
 
 class ChargingDock(Entity):
     def __init__(self, index, world_x, world_z, assigned_robot_id, pair_color, **kwargs):
@@ -102,17 +93,15 @@ class ChargingDock(Entity):
         )
         self.dock_id = index
         self.assigned_robot_id = assigned_robot_id
-        self.tag = f"Pair_Color_{pair_color.name}" if hasattr(pair_color, 'name') else f"Pair_{index}"
         self.name = f"Dock_{index}"
         
         if not self.model:
-            print(f"Warning: Model '{AppConfig.DOCK_MODEL_FILE}' not found. Using fallback.")
             self.model = 'cube'
             self.scale = (1.8, 0.1, 1.8)
             self.color = color.green
 
 class Robot(Entity):
-    def __init__(self, index, world_x, world_z, pair_color, **kwargs):
+    def __init__(self, index, world_x, world_z, pair_color, home_pos, **kwargs):
         world_y = 0
         tinted_color = lerp(color.white, pair_color, 0.1)
         
@@ -126,154 +115,475 @@ class Robot(Entity):
             **kwargs
         )
         self.robot_id = index
-        self.assigned_dock_id = index 
-        self.tag = f"Pair_Color_{pair_color.name}" if hasattr(pair_color, 'name') else f"Pair_{index}"
         self.name = f"Robot_{index}"
+        self.home_pos = home_pos
         
+        # Package visual (matches truck size and pivot)
+        self.package_visual = Entity(
+            parent=self,
+            model=AppConfig.PACKAGE_MODEL_FILE,
+            scale=(1, 1, 1), 
+            position=(0, 0.8, 0), # Lifted higher to avoid being inside the truck body
+            enabled=False,
+            double_sided=True,
+            unlit=True # Ensure it's visible even without perfect lighting
+        )
+        
+        # Diagnostic Fallback
+        if not self.package_visual.model:
+            print(f"Robot {index}: Package model '{AppConfig.PACKAGE_MODEL_FILE}' load failed. Using fallback cube.")
+            self.package_visual.model = 'cube'
+            self.package_visual.scale = (1.2, 0.8, 1.2)
+            self.package_visual.position = (0, 1.0, 0)
+        
+        # State Management
+        self.state = 'IDLE' # IDLE, TO_PICKUP, WAITING_PICKUP, TO_DROP, WAITING_DROP, RETURNING
+        self.current_path = []
+        self.current_task = None
+        self.wait_timer = 0
+        self.battery = 100.0
+
         if not self.model:
             self.model = 'cube'
             self.color = color.blue
             self.scale = (1, 1, 1)
 
     def update(self):
-        pass
+        # Battery Logic
+        is_moving = len(self.current_path) > 0 and self.state not in ['WAITING_PICKUP', 'WAITING_DROP']
+        
+        if is_moving:
+            self.battery -= AppConfig.BATTERY_DRAIN_MOVE * time.dt
+        else:
+            # Check if at a dock to charge (using XZ distance to ignore height differences)
+            at_dock = False
+            for dock in self.manager.docks:
+                # Manually calculate 2D distance on XZ plane to avoid IndexError in distance()
+                dist_xz = sqrt((self.x - dock.x)**2 + (self.z - dock.z)**2)
+                if dist_xz < 1.0:
+                    at_dock = True
+                    break
+            
+            if at_dock:
+                self.battery += AppConfig.BATTERY_CHARGE_RATE * time.dt
+            else:
+                self.battery -= AppConfig.BATTERY_DRAIN_PASSIVE * time.dt
+        
+        self.battery = clamp(self.battery, 0, 100)
+
+        # EMERGENCY RETURN: If battery is critically low, drop task and go to dock
+        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD and self.state != 'RETURNING':
+            print(f"CRITICAL BATTERY on Robot {self.robot_id}! Emergency return initiated.")
+            if self.current_task:
+                # Return task to unassigned pool
+                self.manager.active_tasks.remove(self.current_task)
+                self.manager.unassigned_tasks.append(self.current_task)
+                self.current_task = None
+                self.package_visual.enabled = False
+            
+            self.start_return_home_phase()
+
+        if self.state in ['WAITING_PICKUP', 'WAITING_DROP']:
+            self.wait_timer -= time.dt
+            if self.wait_timer <= 0:
+                if self.state == 'WAITING_PICKUP':
+                    self.start_drop_off_phase()
+                else:
+                    self.start_return_home_phase()
+            return
+
+        if not self.current_path:
+            return
+
+        # Movement target
+        next_grid_pos = self.current_path[0]
+        world_target = Vec3(next_grid_pos[0] * AppConfig.CELL_SCALE[0], 0, next_grid_pos[1] * AppConfig.CELL_SCALE[2])
+        
+        # Smooth Rotation
+        target_rot_y = atan2(world_target.x - self.x, world_target.z - self.z) * 180 / pi
+        self.rotation_y = lerp_angle(self.rotation_y, target_rot_y, time.dt * AppConfig.ROBOT_ROTATION_SPEED)
+        
+        dist = distance(self.position, world_target)
+        if dist > 0.1:
+            self.position += self.forward * AppConfig.ROBOT_MOVE_SPEED * time.dt
+        else:
+            self.position = world_target
+            self.current_path.pop(0)
+            
+            if not self.current_path:
+                self.on_reach_target()
+
+    def on_reach_target(self):
+        if self.state == 'TO_PICKUP':
+            print(f"Robot {self.robot_id} REACHED PICKUP {self.current_task['pickup_char']}. Enabling Package.")
+            self.state = 'WAITING_PICKUP'
+            self.wait_timer = AppConfig.ROBOT_WAIT_TIME
+            if 'pickup_ent' in self.current_task:
+                self.current_task['pickup_ent'].visible = False
+            
+            # Enable package visual
+            self.package_visual.enabled = True
+            self.package_visual.color = self.current_task['color']
+            
+        elif self.state == 'TO_DROP':
+            print(f"Robot {self.robot_id} REACHED DROP {self.current_task['drop_char']}. Disabling Package.")
+            self.state = 'WAITING_DROP'
+            self.wait_timer = AppConfig.ROBOT_WAIT_TIME
+            self.manager.complete_task(self.current_task)
+            
+            # Disable package visual
+            self.package_visual.enabled = False
+            
+        elif self.state == 'RETURNING':
+            print(f"Robot {self.robot_id} PARKED at home {self.home_pos}")
+            self.state = 'IDLE'
+
+    def start_drop_off_phase(self):
+        print(f"Robot {self.robot_id} moving to DROP {self.current_task['drop_char']}")
+        self.state = 'TO_DROP'
+        task_sys = self.manager
+        start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+        goal = (int(round(self.current_task['drop_pos'][0] / AppConfig.CELL_SCALE[0])), 
+                int(round(self.current_task['drop_pos'][2] / AppConfig.CELL_SCALE[2])))
+        self.current_path = task_sys.pathfinder.find_path(start, goal)
+
+    def start_return_home_phase(self):
+        # First check if there are any unassigned tasks
+        if self.manager.unassigned_tasks:
+            # Sort tasks by distance to this robot
+            self.manager.unassigned_tasks.sort(key=lambda t: distance(self.position, t['pickup_pos']))
+            task = self.manager.unassigned_tasks.pop(0)
+            self.manager.active_tasks.append(task)
+            self.manager.assign_task_to_robot(self, task)
+            return
+
+        # If no tasks, find the nearest unoccupied dock
+        nearest_dock_grid = self.manager.get_nearest_unoccupied_dock(self.position)
+        if nearest_dock_grid:
+            self.home_pos = nearest_dock_grid
+            print(f"Robot {self.robot_id} returning to nearest dock at {self.home_pos}")
+            self.state = 'RETURNING'
+            start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+            self.current_path = self.manager.pathfinder.find_path(start, self.home_pos)
+            self.current_task = None
+        else:
+            print(f"Robot {self.robot_id} - No available docks found!")
+            self.state = 'IDLE'
+
+class PickupPoint(Entity):
+    def __init__(self, pos, pair_color, char, **kwargs):
+        super().__init__(
+            model='cube',
+            position=(pos[0], 0.1, pos[2]),
+            scale=(1.2, 0.1, 1.2),
+            color=pair_color,
+            alpha=0.8,
+            **kwargs
+        )
+        Entity(parent=self, model='cube', position=(0, 4, 0), scale=(0.5, 5, 0.5), color=pair_color)
+
+class DropPoint(Entity):
+    def __init__(self, pos, pair_color, char, **kwargs):
+        super().__init__(
+            model='cube',
+            position=(pos[0], 0.1, pos[2]),
+            scale=(1.5, 0.05, 1.5),
+            color=pair_color,
+            alpha=0.4,
+            **kwargs
+        )
+        Entity(parent=self, model='cube', position=(0, 2, 0), scale=(1, 4, 1), color=pair_color, alpha=0.5)
+
+class TaskSystem(Entity):
+    def __init__(self, robots, docks, **kwargs):
+        super().__init__(**kwargs)
+        self.robots = robots
+        self.docks = docks
+        for r in self.robots:
+            r.manager = self
+            
+        self.pending_pickup = None
+        self.active_tasks = []
+        self.unassigned_tasks = []
+        self.scale_x = AppConfig.CELL_SCALE[0]
+        self.scale_z = AppConfig.CELL_SCALE[2]
+        
+        self.grid_data = self.load_grid_data()
+        self.pathfinder = PathFinder(self)
+        
+        self.char_pool = [c for c in "abcdefghijklmnopqrstuvwxyz" if c not in ['t', 'x']]
+        self.current_idx = 0
+        self.log_timer = 0
+
+    def update(self):
+        # Systematic battery logging
+        self.log_timer += time.dt
+        if self.log_timer >= AppConfig.BATTERY_LOG_INTERVAL:
+            self.log_timer = 0
+            log_str = " | ".join([f"Truck {r.robot_id}: {int(r.battery)}%" for r in self.robots])
+            print(f"[BATTERY STATUS] {log_str}")
+
+    @property
+    def width(self): return len(self.grid_data[0]) if self.grid_data else 0
+    @property
+    def height(self): return len(self.grid_data)
+    
+    def is_walkable(self, x, y, goal=None):
+        if 0 <= x < self.width and 0 <= y < self.height:
+            if self.grid_data[y][x] == AppConfig.OBSTACLE_CHAR:
+                return False
+            if y < 2:
+                if goal and goal[1] < 2:
+                    return True
+                return False
+            return True
+        return False
+
+    def load_grid_data(self):
+        try:
+            with open(AppConfig.LAYOUT_FILE, 'r') as f:
+                return [list(line.strip()) for line in f.readlines() if line.strip()]
+        except:
+            return []
+
+    def save_grid_to_file(self):
+        with open(AppConfig.LAYOUT_FILE, 'w') as f:
+            for row in self.grid_data:
+                f.write("".join(row) + "\n")
+
+    def update_file_grid(self, world_pos, char):
+        grid_x = int(round(world_pos[0] / self.scale_x))
+        grid_z = int(round(world_pos[2] / self.scale_z))
+        if 0 <= grid_z < len(self.grid_data) and 0 <= grid_x < len(self.grid_data[0]):
+            self.grid_data[grid_z][grid_x] = char
+            self.save_grid_to_file()
+            return True
+        return False
+
+    def input(self, key):
+        if key == 'left mouse down' and mouse.hovered_entity:
+            if mouse.hovered_entity.name == 'warehouse_floor':
+                snap_x = round(mouse.world_point.x / self.scale_x) * self.scale_x
+                snap_z = round(mouse.world_point.z / self.scale_z) * self.scale_z
+                pos = (snap_x, 0, snap_z)
+
+                if self.current_idx >= len(self.char_pool):
+                    print("Maximum tasks reached!")
+                    return
+
+                if not self.pending_pickup:
+                    p_char = self.char_pool[self.current_idx]
+                    if self.update_file_grid(pos, p_char):
+                        task_color = color.random_color()
+                        self.pending_pickup = PickupPoint(pos, task_color, p_char)
+                        self.pending_pickup.task_char = p_char
+                        print(f"PICKUP '{p_char}' added at {pos}")
+                else:
+                    d_char = self.pending_pickup.task_char.upper()
+                    if self.update_file_grid(pos, d_char):
+                        drop = DropPoint(pos, self.pending_pickup.color, d_char)
+                        task_info = {
+                            'pickup_char': self.pending_pickup.task_char,
+                            'pickup_pos': self.pending_pickup.position,
+                            'pickup_ent': self.pending_pickup,
+                            'drop_char': d_char,
+                            'drop_pos': drop.position,
+                            'drop_ent': drop,
+                            'color': self.pending_pickup.color
+                        }
+                        self.unassigned_tasks.append(task_info)
+                        self.assign_tasks()
+                        self.pending_pickup = None
+                        self.current_idx += 1
+
+    def complete_task(self, task):
+        if 'pickup_ent' in task: destroy(task['pickup_ent'])
+        if 'drop_ent' in task: destroy(task['drop_ent'])
+        px, pz = int(round(task['pickup_pos'][0] / self.scale_x)), int(round(task['pickup_pos'][2] / self.scale_z))
+        dx, dz = int(round(task['drop_pos'][0] / self.scale_x)), int(round(task['drop_pos'][2] / self.scale_z))
+        if 0 <= pz < len(self.grid_data) and 0 <= px < len(self.grid_data[0]): self.grid_data[pz][px] = '.'
+        if 0 <= dz < len(self.grid_data) and 0 <= dx < len(self.grid_data[0]): self.grid_data[dz][dx] = '.'
+        self.save_grid_to_file()
+        if task in self.active_tasks: self.active_tasks.remove(task)
+
+    def assign_tasks(self):
+        # Assign available tasks to IDLE robots
+        for task in list(self.unassigned_tasks):
+            best_robot = self.find_nearest_available_robot(task)
+            if best_robot:
+                self.unassigned_tasks.remove(task)
+                self.active_tasks.append(task)
+                self.assign_task_to_robot(best_robot, task)
+
+    def find_nearest_available_robot(self, task):
+        pickup_grid = (int(round(task['pickup_pos'][0] / self.scale_x)), 
+                       int(round(task['pickup_pos'][2] / self.scale_z)))
+        best_robot = None
+        min_dist = float('inf')
+        
+        # Consider IDLE robots or robots that are RETURNING (can be redirected)
+        for robot in self.robots:
+            # CHECK BATTERY: Refuse if below low threshold
+            if robot.battery < AppConfig.BATTERY_LOW_THRESHOLD:
+                continue
+
+            if robot.state in ['IDLE', 'RETURNING']:
+                robot_grid = (int(round(robot.x / self.scale_x)), int(round(robot.z / self.scale_z)))
+                path = self.pathfinder.find_path(robot_grid, pickup_grid)
+                if path and len(path) < min_dist:
+                    min_dist = len(path)
+                    best_robot = robot
+                    
+        return best_robot
+
+    def assign_task_to_robot(self, robot, task):
+        print(f"ASSIGNED Task {task['pickup_char']} to Robot {robot.robot_id}")
+        robot.state = 'TO_PICKUP'
+        robot.current_task = task
+        robot.current_path = self.pathfinder.find_path(
+            (int(round(robot.x / self.scale_x)), int(round(robot.z / self.scale_z))),
+            (int(round(task['pickup_pos'][0] / self.scale_x)), int(round(task['pickup_pos'][2] / self.scale_z)))
+        )
+
+    def get_nearest_unoccupied_dock(self, robot_pos):
+        best_dock = None
+        min_dist = float('inf')
+        
+        # Grid position of robots currently returning to docks
+        occupied_target_docks = [r.home_pos for r in self.robots if r.state == 'RETURNING' and r.home_pos]
+
+        for dock in self.docks:
+            dock_grid = (int(round(dock.x / self.scale_x)), int(round(dock.z / self.scale_z)))
+            if dock_grid not in occupied_target_docks:
+                dist = distance(robot_pos, dock.position)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_dock = dock_grid
+                    
+        return best_dock if best_dock else self.docks[0].position # Fallback
+
+class TopDownCamera(Entity):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.move_speed = AppConfig.TOP_DOWN_SPEED
+        self.lift_speed = AppConfig.TOP_DOWN_LIFT_SPEED
+
+    def update(self):
+        if not self.enabled:
+            return
+
+        # Arrow keys for X and Z axes
+        self.x += (held_keys['right arrow'] - held_keys['left arrow']) * self.move_speed * time.dt
+        self.z += (held_keys['up arrow'] - held_keys['down arrow']) * self.move_speed * time.dt
+
+        # E and Q for Y axis (vertical)
+        self.y += (held_keys['e'] - held_keys['q']) * self.lift_speed * time.dt
+
+class CameraManager(Entity):
+    def __init__(self, player, top_down, **kwargs):
+        super().__init__(**kwargs)
+        self.player = player
+        self.top_down = top_down
+
+    def input(self, key):
+        if key == 'tab':
+            self.player.enabled = not self.player.enabled
+            self.top_down.enabled = not self.player.enabled
+            
+            if self.top_down.enabled:
+                self.top_down.position = (self.player.x, self.top_down.y, self.player.z)
+                camera.parent = self.top_down
+                camera.position = (0, 0, 0)
+                camera.rotation = (90, 0, 0)
+                mouse.visible = True
+                mouse.locked = False
+            else:
+                camera.parent = self.player.camera_pivot
+                camera.position = (0, 0, 0)
+                camera.rotation = (0, 0, 0)
+                mouse.visible = AppConfig.MOUSE_VISIBLE
+                mouse.locked = True
 
 # ==========================================
 # MAIN APPLICATION
 # ==========================================
 
+def reset_layout_file(filename):
+    try:
+        if os.path.exists(AppConfig.DEFAULT_LAYOUT_FILE):
+            # Close files and ensure target is writable
+            shutil.copy2(AppConfig.DEFAULT_LAYOUT_FILE, filename)
+            print(f"Layout file '{filename}' reset from '{AppConfig.DEFAULT_LAYOUT_FILE}'.")
+        else:
+            print(f"Warning: {AppConfig.DEFAULT_LAYOUT_FILE} not found.")
+    except Exception as e:
+        print(f"Warning: Could not reset layout file: {e}")
+
 def load_grid(filename):
-    """Loads the grid layout from a file."""
     try:
         with open(filename, 'r') as f:
             return [line.strip() for line in f.readlines() if line.strip()]
     except FileNotFoundError:
-        print(f"Error: {filename} not found. Using default empty grid.")
         return ["." * AppConfig.DEFAULT_WIDTH for _ in range(AppConfig.DEFAULT_HEIGHT)]
 
 def parse_map_and_spawn(grid):
-    """
-    Parses the grid to:
-    1. Create the visual environment (Floor, Shelves).
-    2. Identify spawn points for Robots and Docks.
-    3. Spawn and pair Robots and Docks.
-    """
-    height = len(grid)
-    width = len(grid[0]) if height > 0 else 0
-    scale_x = AppConfig.CELL_SCALE[0]
-    scale_z = AppConfig.CELL_SCALE[2]
-    
-    floor_parent = Entity(name='floor_parent')
-    
+    height, width = len(grid), len(grid[0]) if len(grid) > 0 else 0
+    scale_x, scale_z = AppConfig.CELL_SCALE[0], AppConfig.CELL_SCALE[2]
     dock_locations = []
     robot_locations = []
-
-    print(f"Parsing map {width}x{height}...")
-
+    shelf_parents = {m: Entity(name=f'sh_{i}', enabled=False) for i, m in enumerate(AppConfig.SHELF_MODEL_FILE)}
+    
     for z in range(height):
         for x in range(width):
             char = grid[z][x]
-            
-            # Calculate World Position
-            world_x = x * scale_x
-            world_z = z * scale_z
-            
-            # Spawn Shelves
+            wx, wz = x * scale_x, z * scale_z
             if char == AppConfig.OBSTACLE_CHAR:
-                Entity(
-                    parent=floor_parent,
-                    model=AppConfig.SHELF_MODEL_FILE[random.randint(0, len(AppConfig.SHELF_MODEL_FILE)-1)],
-                    texture=AppConfig.SHELF_TEXTURE_FILE, 
-                    double_sided=True,
-                    color=AppConfig.OBSTACLE_COLOR,
-                    position=(world_x, AppConfig.OBSTACLE_Y_POS, world_z),
-                    scale=AppConfig.OBSTACLE_SCALE,
-                    rotation_y=90
-                )
-            
-            # Record Dock Locations
-            elif char == AppConfig.DOCK_CHAR:
-                dock_locations.append((world_x, world_z))
-                
-            # Record Robot Locations
-            elif char == AppConfig.ROBOT_CHAR:
-                robot_locations.append((world_x, world_z))
+                m = AppConfig.SHELF_MODEL_FILE[random.randint(0, len(AppConfig.SHELF_MODEL_FILE)-1)]
+                Entity(parent=shelf_parents[m], model=m, texture=AppConfig.SHELF_TEXTURE_FILE, 
+                       position=(wx, 0, wz), scale=AppConfig.OBSTACLE_SCALE, rotation_y=90, double_sided=True)
+            elif char == AppConfig.DOCK_CHAR: dock_locations.append((wx, wz))
+            elif char == AppConfig.ROBOT_CHAR: robot_locations.append((wx, wz))
 
-    # Spawn Giant Floor
-    Entity(
-        model='cube',
-        position=((width-1)*scale_x/2, AppConfig.FLOOR_Y_POS, (height-1)*scale_z/2),
-        scale=(width * scale_x, AppConfig.CELL_SCALE[1], height * scale_z),
-        texture=AppConfig.FLOOR_TEXTURE_FILE,
-        texture_scale=(width, height),
-        color=AppConfig.FLOOR_COLOR_A,
-        collider='box',
-        visible=True
-    )
+    floor_parent = Entity(name='floor_parent')
+    for m, p in shelf_parents.items():
+        if p.children: 
+            p.parent = floor_parent
+            p.enabled = True
+            p.flatten_strong()
+            p.double_sided = True # Apply to combined mesh
+
+    Entity(model='cube', parent=floor_parent, name='warehouse_floor',
+           position=((width-1)*scale_x/2, AppConfig.FLOOR_Y_POS, (height-1)*scale_z/2),
+           scale=(width * scale_x, AppConfig.CELL_SCALE[1], height * scale_z),
+           texture=AppConfig.FLOOR_TEXTURE_FILE, texture_scale=(width, height),
+           color=AppConfig.FLOOR_COLOR_A, collider='box')
     
-    # --- Spawn and Pair Robots & Docks ---
-    robots = []
-    docks = []
-    AppConfig.PAIRINGS = []
-    
+    robots, docks = [], []
     pair_colors = [color.red, color.green, color.blue, color.yellow, color.cyan, color.magenta, color.orange, color.azure]
-
-    # We pair them based on the order they were found (reading order: top-left to bottom-right)
     count = min(len(dock_locations), len(robot_locations))
-    
-    print("\n" + "="*40)
-    print(f"FOUND {len(dock_locations)} Docks and {len(robot_locations)} Robots. Spawning {count} pairs.")
-    print("="*40)
-
     for i in range(count):
-        dock_pos = dock_locations[i]
-        robot_pos = robot_locations[i]
-        current_pair_color = pair_colors[i % len(pair_colors)]
-        
-        # Spawn Dock
-        dock = ChargingDock(
-            index=i, 
-            world_x=dock_pos[0], 
-            world_z=dock_pos[1], 
-            assigned_robot_id=i, 
-            pair_color=current_pair_color
-        )
-        docks.append(dock)
+        d_pos, r_pos = dock_locations[i], robot_locations[i]
+        c = pair_colors[i % len(pair_colors)]
+        docks.append(ChargingDock(i, d_pos[0], d_pos[1], i, c))
+        home_grid = (int(round(r_pos[0]/scale_x)), int(round(r_pos[1]/scale_z)))
+        robots.append(Robot(i, r_pos[0], r_pos[1], c, home_grid))
 
-        # Spawn Robot
-        robot = Robot(
-            index=i, 
-            world_x=robot_pos[0], 
-            world_z=robot_pos[1], 
-            pair_color=current_pair_color
-        )
-        robots.append(robot)
-
-        pair_info = {'color': current_pair_color.name, 'robot': robot.name, 'dock': dock.name}
-        AppConfig.PAIRINGS.append(pair_info)
-        print(f"PAIR {i}: Color={current_pair_color.name} | {robot.name} at {robot.position} <---> {dock.name} at {dock.position}")
-
-    print("="*40 + "\n")
-
-    return width, height, floor_parent
+    return width, height, floor_parent, robots, docks
 
 def main():
     app = Ursina()
-
+    reset_layout_file(AppConfig.LAYOUT_FILE)
     grid = load_grid(AppConfig.LAYOUT_FILE)
-    
-    # New combined function
-    width, height, floor_parent = parse_map_and_spawn(grid)
-
-    scale_x, scale_z = AppConfig.CELL_SCALE[0], AppConfig.CELL_SCALE[2]
-    center_x, center_z = (width / 2) * scale_x, (height / 2) * scale_z
-    
+    width, height, floor_parent, robots, docks = parse_map_and_spawn(grid)
+    center_x, center_z = (width / 2) * AppConfig.CELL_SCALE[0], (height / 2) * AppConfig.CELL_SCALE[2]
     player = FirstPersonController()
     player.position = (center_x, AppConfig.PLAYER_START_HEIGHT, center_z + AppConfig.PLAYER_START_OFFSET_Z)
     player.cursor.visible = AppConfig.MOUSE_VISIBLE
+    
+    top_down_camera = TopDownCamera(position=(center_x, AppConfig.TOP_DOWN_HEIGHT, center_z), enabled=False)
+    CameraManager(player, top_down_camera)
 
-    CullingSystem(target=player, items_parent=floor_parent, distance=AppConfig.CULLING_DISTANCE)
-
+    TaskSystem(robots=robots, docks=docks)
     app.run()
 
 if __name__ == "__main__":

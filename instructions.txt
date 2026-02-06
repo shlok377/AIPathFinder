@@ -2,6 +2,5 @@
 X = solid shelves (CANNOT travel here)
 # = charging docks (can travel here)
 T = initial parking position of the robot (can travel here)
-
-
-.\venv\Scripts\activate.bat
+ lower case letters represents pick-up locations
+ UPPER care letter represents drop-off locations
