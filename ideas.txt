@@ -28,3 +28,66 @@
   5. Visual Synchrony
    * Fleet HUD: A 2D overlay showing all 4 trucks' status (Battery, State, Destination) simultaneously so the user doesn't have to check the console.
    * Path Visualization: Ghost lines on the floor showing the intended path of each truck to visually confirm harmony.
+
+
+
+
+# Version2 Optimization:
+
+
+  1. Strategic Multi-Agent Pathfinding (MAPF+)
+   * Spatial-Temporal Reservations: When a truck plans a path, it "reserves" its grid cells at specific timestamps. If Robot B's path would intersect with Robot A at
+     Time=10s, Robot B automatically calculates a 1-second "buffer wait" or a side-step route before even starting to move.
+   * Dynamic Re-Routing: If a user places a pickup point that blocks a narrow aisle while a truck is mid-transit, the entire fleet instantly recalculates to avoid the
+     bottleneck.
+   * Priority Hierarchies:
+       * Emergency (Red): Critical battery trucks get right-of-way.
+       * Productive (Blue): Trucks carrying packages have secondary priority.
+       * Idle (Grey): Empty trucks must move out of the way into "virtual sidings" to let productive trucks pass.
+
+  2. Global Task Auctioning (Market-Based Assignment)
+   * Collaborative Bidding: Instead of the nearest truck grabbing a task, the TaskSystem runs a "mini-auction" for every new task:
+       * Robot A bids: "I am 5m away but have 25% battery. Cost = High."
+       * Robot B bids: "I am 10m away but have 90% battery and a straight line path. Cost = Low."
+       * Result: Robot B wins because it maximizes long-term fleet stability.
+   * Task Bundling: If two tasks are in the same quadrant, one truck will plan a "Multi-Stop" route (Pickup A -> Pickup B -> Drop A -> Drop B) to minimize "Deadhead" (empty
+     travel) distance.
+
+
+  3. Strategic Energy Load-Balancing
+   * Predictive Feasibility: Every task assignment includes a "Return-to-Dock" safety buffer calculation. If a truck cannot reach Pickup + Drop + Any available dock with a
+     10% reserve, it is disqualified from bidding.
+   * JIT (Just-In-Time) Charging: If the fleet is idle, trucks don't just sit there. They analyze the warehouse layout and "Yield" the most central docks to trucks with lower
+     battery, moving themselves to peripheral docks.
+   * Opportunity Harvesting: If a truck is passing a dock while heading to a task and has 30 seconds of "slack time," it will stop and "top-up" for a few seconds if it won't
+     delay the delivery.
+
+
+  4. Flow & Throughput Intelligence
+   * Congestion Avoidance: The PathFinder uses a "Heatmap" of fleet movement. If Aisle 1 is "Hot" (busy), the cost of traversing it increases, naturally pushing other trucks
+     to take alternate routes to maintain flow.
+   * Idle Staging: When tasks are zero, trucks don't return to docks if they have >80% battery. Instead, they move to "Staging Points" (the center of the 4 warehouse
+     quadrants) to minimize response time for the next click.
+
+
+
+
+
+
+
+
+
+
+
+
+
+   1. Charging Session Lock: Trucks with battery levels below 20% now enter a mandatory is_charging_session. They will strictly ignore all new task assignments and remain at
+      their docks until they reach the 80% Recharge Target.
+   2. Instant Deployment: Once a truck hits 80%, it clears its charging flag and immediately checks the task queue. If a task is waiting, it will depart from the dock
+      instantly.
+   3. Collision Avoidance (Traffic Yielding): I've added a basic traffic manager. Trucks now check the grid cell directly in front of them; if another truck is already there,
+      they will wait patiently until the path is clear, preventing overlapping models.
+   4. Path Visualization (Ghost Trails): Every truck now projects its future path on the floor using faint, color-coded squares. This allows you to visually track the
+      "intent" of every unit in the fleet.
+   5. Optimized HUD: The Fleet HUD now uses a more compact layout with 1.7x text scaling and updated positioning, providing a clear overview of which trucks are active and
+      which are in a charging session.

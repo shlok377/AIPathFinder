@@ -56,6 +56,9 @@ class AppConfig:
     # Optimization
     CULLING_DISTANCE = 40 
 
+    # UI Settings
+    HUD_SCALE = 0.8
+
     # Player Settings
     PLAYER_START_HEIGHT = 10
     PLAYER_START_OFFSET_Z = -20 
@@ -69,14 +72,38 @@ class AppConfig:
     # Battery Settings
     BATTERY_DRAIN_MOVE = 1.0     # % per second while moving
     BATTERY_DRAIN_PASSIVE = 0.1  # % per second while idling
-    BATTERY_CHARGE_RATE = 5.0    # % per second while charging
+    BATTERY_CHARGE_RATE = 3.0    # % per second while charging
     BATTERY_LOG_INTERVAL = 2.0   # seconds between logs
     BATTERY_LOW_THRESHOLD = 20.0 # Refuse new tasks below this
-    BATTERY_CRITICAL_THRESHOLD = 5.0 # Forced return below this
+    BATTERY_RECHARGE_TARGET = 80.0 # Stay at dock until this level
+    BATTERY_CRITICAL_THRESHOLD = 10.0 # Forced return below this
+
+    # Staging Points (for idle high-battery trucks)
+    STAGING_POINTS = [(6, 6), (18, 6), (6, 18), (18, 18)]
 
 # ==========================================
 # CLASSES
 # ==========================================
+
+class PathVisualizer(Entity):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dots = []
+
+    def draw_path(self, path, color):
+        self.clear()
+        if not path: return
+        for i, pos in enumerate(path):
+            if i % 2 == 0: # Draw every 2nd node to reduce entity count
+                world_pos = Vec3(pos[0] * AppConfig.CELL_SCALE[0], 0.05, pos[1] * AppConfig.CELL_SCALE[2])
+                dot = Entity(model='quad', position=world_pos, rotation_x=90, 
+                             scale=0.5, color=color, alpha=0.3, unlit=True)
+                self.dots.append(dot)
+
+    def clear(self):
+        for d in self.dots:
+            destroy(d)
+        self.dots = []
 
 class ChargingDock(Entity):
     def __init__(self, index, world_x, world_z, assigned_robot_id, pair_color, **kwargs):
@@ -142,6 +169,8 @@ class Robot(Entity):
         self.current_task = None
         self.wait_timer = 0
         self.battery = 100.0
+        self.is_charging_session = False
+        self.visualizer = PathVisualizer()
 
         if not self.model:
             self.model = 'cube'
@@ -149,38 +178,61 @@ class Robot(Entity):
             self.scale = (1, 1, 1)
 
     def update(self):
+        # Path Visualization
+        if self.current_path:
+            self.visualizer.draw_path(self.current_path, self.color)
+        else:
+            self.visualizer.clear()
+
         # Battery Logic
         is_moving = len(self.current_path) > 0 and self.state not in ['WAITING_PICKUP', 'WAITING_DROP']
         
+        at_dock = False
+        for dock in self.manager.docks:
+            dist_xz = sqrt((self.x - dock.x)**2 + (self.z - dock.z)**2)
+            if dist_xz < 1.0:
+                at_dock = True
+                break
+
         if is_moving:
             self.battery -= AppConfig.BATTERY_DRAIN_MOVE * time.dt
         else:
-            # Check if at a dock to charge (using XZ distance to ignore height differences)
-            at_dock = False
-            for dock in self.manager.docks:
-                # Manually calculate 2D distance on XZ plane to avoid IndexError in distance()
-                dist_xz = sqrt((self.x - dock.x)**2 + (self.z - dock.z)**2)
-                if dist_xz < 1.0:
-                    at_dock = True
-                    break
-            
             if at_dock:
                 self.battery += AppConfig.BATTERY_CHARGE_RATE * time.dt
+                # End charging session if target reached
+                if self.battery >= AppConfig.BATTERY_RECHARGE_TARGET:
+                    if self.is_charging_session:
+                        print(f"Robot {self.robot_id} recharged to {int(self.battery)}%. Ready for work.")
+                    self.is_charging_session = False
             else:
                 self.battery -= AppConfig.BATTERY_DRAIN_PASSIVE * time.dt
         
         self.battery = clamp(self.battery, 0, 100)
 
         # EMERGENCY RETURN: If battery is critically low, drop task and go to dock
-        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD and self.state != 'RETURNING':
-            print(f"CRITICAL BATTERY on Robot {self.robot_id}! Emergency return initiated.")
+        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD and self.state not in ['IDLE', 'RETURNING']:
+            print(f"CRITICAL BATTERY on Robot {self.robot_id}! Dropping package and emergency return.")
+            self.is_charging_session = True
             if self.current_task:
-                # Return task to unassigned pool
-                self.manager.active_tasks.remove(self.current_task)
-                self.manager.unassigned_tasks.append(self.current_task)
+                task = self.current_task
+                if self.package_visual.enabled:
+                    task['pickup_pos'] = self.position
+                    if 'pickup_ent' in task:
+                        task['pickup_ent'].position = (self.x, 0.1, self.z)
+                        task['pickup_ent'].visible = True
+                    self.manager.update_file_grid(self.position, task['pickup_char'])
+                else:
+                    if 'pickup_ent' in task: task['pickup_ent'].visible = True
+                
+                if task in self.manager.active_tasks: self.manager.active_tasks.remove(task)
+                self.manager.unassigned_tasks.append(task)
                 self.current_task = None
                 self.package_visual.enabled = False
-            
+            self.start_return_home_phase()
+
+        # LOW BATTERY AUTO-RETURN: If below threshold and idle (not at dock), go charge
+        if self.battery < AppConfig.BATTERY_LOW_THRESHOLD and self.state == 'IDLE' and not at_dock:
+            self.is_charging_session = True
             self.start_return_home_phase()
 
         if self.state in ['WAITING_PICKUP', 'WAITING_DROP']:
@@ -195,8 +247,16 @@ class Robot(Entity):
         if not self.current_path:
             return
 
-        # Movement target
+        # Traffic Yielding: Check if next node is occupied by another robot
         next_grid_pos = self.current_path[0]
+        for other in self.manager.robots:
+            if other != self:
+                other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
+                if other_grid == next_grid_pos:
+                    # Someone is in our way, wait here
+                    return
+
+        # Movement target
         world_target = Vec3(next_grid_pos[0] * AppConfig.CELL_SCALE[0], 0, next_grid_pos[1] * AppConfig.CELL_SCALE[2])
         
         # Smooth Rotation
@@ -248,8 +308,12 @@ class Robot(Entity):
         self.current_path = task_sys.pathfinder.find_path(start, goal)
 
     def start_return_home_phase(self):
-        # First check if there are any unassigned tasks
-        if self.manager.unassigned_tasks:
+        # Set charging session flag if battery is low
+        if self.battery < AppConfig.BATTERY_LOW_THRESHOLD:
+            self.is_charging_session = True
+
+        # First check if there are any unassigned tasks - ONLY if battery is healthy and NOT charging
+        if not self.is_charging_session and self.battery >= AppConfig.BATTERY_LOW_THRESHOLD and self.manager.unassigned_tasks:
             # Sort tasks by distance to this robot
             self.manager.unassigned_tasks.sort(key=lambda t: distance(self.position, t['pickup_pos']))
             task = self.manager.unassigned_tasks.pop(0)
@@ -257,7 +321,7 @@ class Robot(Entity):
             self.manager.assign_task_to_robot(self, task)
             return
 
-        # If no tasks, find the nearest unoccupied dock
+        # If no tasks or battery low, find the nearest unoccupied dock
         nearest_dock_grid = self.manager.get_nearest_unoccupied_dock(self.position)
         if nearest_dock_grid:
             self.home_pos = nearest_dock_grid
@@ -311,8 +375,7 @@ class TaskSystem(Entity):
         self.grid_data = self.load_grid_data()
         self.pathfinder = PathFinder(self)
         
-        self.char_pool = [c for c in "abcdefghijklmnopqrstuvwxyz" if c not in ['t', 'x']]
-        self.current_idx = 0
+        self.available_chars = [c for c in "abcdefghijklmnopqrstuvwxyz" if c not in ['t', 'x']]
         self.log_timer = 0
 
     def update(self):
@@ -322,19 +385,29 @@ class TaskSystem(Entity):
             self.log_timer = 0
             log_str = " | ".join([f"Truck {r.robot_id}: {int(r.battery)}%" for r in self.robots])
             print(f"[BATTERY STATUS] {log_str}")
+        
+        # Continuously check for available tasks to handle queued work immediately
+        self.assign_tasks()
 
     @property
     def width(self): return len(self.grid_data[0]) if self.grid_data else 0
     @property
     def height(self): return len(self.grid_data)
     
-    def is_walkable(self, x, y, goal=None):
+    def is_walkable(self, x, y, goal=None, start_pos=None):
         if 0 <= x < self.width and 0 <= y < self.height:
             if self.grid_data[y][x] == AppConfig.OBSTACLE_CHAR:
                 return False
+            
+            # Parking lane restriction (y < 2)
             if y < 2:
+                # Allow if goal is in lane (docking/pickup in lane)
                 if goal and goal[1] < 2:
                     return True
+                # Allow if already in lane (to move around or leave)
+                if start_pos and start_pos[1] < 2:
+                    return True
+                # Otherwise, don't enter the lane
                 return False
             return True
         return False
@@ -367,12 +440,12 @@ class TaskSystem(Entity):
                 snap_z = round(mouse.world_point.z / self.scale_z) * self.scale_z
                 pos = (snap_x, 0, snap_z)
 
-                if self.current_idx >= len(self.char_pool):
-                    print("Maximum tasks reached!")
+                if not self.available_chars and not self.pending_pickup:
+                    print("Maximum concurrent tasks (24) reached!")
                     return
 
                 if not self.pending_pickup:
-                    p_char = self.char_pool[self.current_idx]
+                    p_char = self.available_chars.pop(0)
                     if self.update_file_grid(pos, p_char):
                         task_color = color.random_color()
                         self.pending_pickup = PickupPoint(pos, task_color, p_char)
@@ -394,7 +467,6 @@ class TaskSystem(Entity):
                         self.unassigned_tasks.append(task_info)
                         self.assign_tasks()
                         self.pending_pickup = None
-                        self.current_idx += 1
 
     def complete_task(self, task):
         if 'pickup_ent' in task: destroy(task['pickup_ent'])
@@ -405,11 +477,54 @@ class TaskSystem(Entity):
         if 0 <= dz < len(self.grid_data) and 0 <= dx < len(self.grid_data[0]): self.grid_data[dz][dx] = '.'
         self.save_grid_to_file()
         if task in self.active_tasks: self.active_tasks.remove(task)
+        
+        # Return character to the pool for reuse
+        self.available_chars.append(task['pickup_char'])
+        self.available_chars.sort()
 
     def assign_tasks(self):
-        # Assign available tasks to IDLE robots
+        # Assign available tasks to robots using predictive battery feasibility
         for task in list(self.unassigned_tasks):
-            best_robot = self.find_nearest_available_robot(task)
+            pickup_grid = (int(round(task['pickup_pos'][0] / self.scale_x)), 
+                           int(round(task['pickup_pos'][2] / self.scale_z)))
+            drop_grid = (int(round(task['drop_pos'][0] / self.scale_x)), 
+                         int(round(task['drop_pos'][2] / self.scale_z)))
+            
+            best_robot = None
+            min_dist = float('inf')
+            
+            for robot in self.robots:
+                if robot.state not in ['IDLE', 'RETURNING']:
+                    continue
+                
+                # Check battery
+                if robot.battery < AppConfig.BATTERY_LOW_THRESHOLD or robot.is_charging_session:
+                    continue
+                
+                robot_grid = (int(round(robot.x / self.scale_x)), int(round(robot.z / self.scale_z)))
+                
+                # PREDICTIVE FEASIBILITY: robot -> pickup -> drop -> nearest dock
+                path_to_pickup = self.pathfinder.find_path(robot_grid, pickup_grid)
+                if not path_to_pickup: continue
+                
+                path_to_drop = self.pathfinder.find_path(pickup_grid, drop_grid)
+                if not path_to_drop: continue
+                
+                # Find nearest dock from drop-off to ensure return is possible
+                nearest_dock = self.get_nearest_unoccupied_dock(task['drop_pos'])
+                path_to_dock = self.pathfinder.find_path(drop_grid, nearest_dock)
+                
+                total_trip_dist = len(path_to_pickup) + len(path_to_drop) + len(path_to_dock)
+                
+                # Estimated battery cost (1% per grid cell move is a safe estimate)
+                est_cost = total_trip_dist * (AppConfig.BATTERY_DRAIN_MOVE / AppConfig.ROBOT_MOVE_SPEED) * 2.0 # with safety buffer
+                
+                if robot.battery > est_cost:
+                    dist = len(path_to_pickup)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_robot = robot
+            
             if best_robot:
                 self.unassigned_tasks.remove(task)
                 self.active_tasks.append(task)
@@ -424,7 +539,7 @@ class TaskSystem(Entity):
         # Consider IDLE robots or robots that are RETURNING (can be redirected)
         for robot in self.robots:
             # CHECK BATTERY: Refuse if below low threshold
-            if robot.battery < AppConfig.BATTERY_LOW_THRESHOLD:
+            if robot.battery < AppConfig.BATTERY_LOW_THRESHOLD or robot.is_charging_session:
                 continue
 
             if robot.state in ['IDLE', 'RETURNING']:
@@ -460,7 +575,11 @@ class TaskSystem(Entity):
                     min_dist = dist
                     best_dock = dock_grid
                     
-        return best_dock if best_dock else self.docks[0].position # Fallback
+        if best_dock:
+            return best_dock
+        else:
+            # Fallback to the first dock's grid coordinates
+            return (int(round(self.docks[0].x / self.scale_x)), int(round(self.docks[0].z / self.scale_z)))
 
 class TopDownCamera(Entity):
     def __init__(self, **kwargs):
@@ -503,6 +622,38 @@ class CameraManager(Entity):
                 camera.rotation = (0, 0, 0)
                 mouse.visible = AppConfig.MOUSE_VISIBLE
                 mouse.locked = True
+
+class FleetHUD(Entity):
+    def __init__(self, robots, task_system, **kwargs):
+        super().__init__(parent=camera.ui, **kwargs)
+        self.robots = robots
+        self.ts = task_system
+        
+        # Increased scale for the panel to fit larger text
+        self.bg = Panel(scale=(0.5, 0.55), position=(0.75, 0.1), color=color.black66)
+        self.title = Text("FLEET STATUS", parent=self.bg, origin=(0,0), y=0.45, scale=3.0, color=color.azure)
+        
+        self.info_texts = []
+        for i in range(len(self.robots)):
+            # Increased scale to 2.4 (2x original 1.2) and adjusted vertical spacing
+            t = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.3 - (i * 0.2), scale=1.7)
+            self.info_texts.append(t)
+            
+        # Increased scale to 2.4 (2x original 1.2)
+        self.queue_text = Text("", parent=self.bg, origin=(0,0), y=-0.4, scale=2.4, color=color.yellow)
+
+    def update(self):
+        for i, robot in enumerate(self.robots):
+            b_color = color.green if robot.battery > 50 else (color.orange if robot.battery > 20 else color.red)
+            state_str = robot.state
+            if robot.is_charging_session:
+                state_str = "CHARGING..."
+            
+            self.info_texts[i].text = f"Truck {robot.robot_id}: {state_str}\nBattery: <{b_color.brightness + 0.2}>{int(robot.battery)}%</{b_color.brightness + 0.2}>"
+            self.info_texts[i].color = b_color
+
+        total_pending = len(self.ts.unassigned_tasks)
+        self.queue_text.text = f"Pending Tasks: {total_pending}"
 
 # ==========================================
 # MAIN APPLICATION
@@ -583,7 +734,8 @@ def main():
     top_down_camera = TopDownCamera(position=(center_x, AppConfig.TOP_DOWN_HEIGHT, center_z), enabled=False)
     CameraManager(player, top_down_camera)
 
-    TaskSystem(robots=robots, docks=docks)
+    ts = TaskSystem(robots=robots, docks=docks)
+    FleetHUD(robots=robots, task_system=ts)
     app.run()
 
 if __name__ == "__main__":
