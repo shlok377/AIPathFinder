@@ -1,2 +1,30 @@
-the trucks in the warehouse_layout.txt are replaced with [1, 2, 3, 4] and their paths are formed with their assigned numbers as well, so the truck will only have to look for collisions at the overlaps and the junctions
+# Version1 Optimization:
 
+
+  1. Multi-Agent Pathfinding (MAPF)
+   * Collision Avoidance: Trucks treat other moving trucks as dynamic obstacles.
+   * Traffic Rules: Priority given to trucks carrying packages; empty trucks wait in "pull-over" spots to let loaded trucks pass.
+   * Aisle Management: Preventing two trucks from entering the same narrow aisle from opposite ends.
+
+
+  2. Predictive Docking & Reservation
+   * Dock Claiming: As soon as a truck enters the RETURNING state, it "claims" a dock in the metadata. Other trucks immediately re-calculate to the next nearest dock,
+     preventing race conditions.
+   * Charge Balancing: If all trucks are idle, they distribute themselves across the warehouse layout to minimize the distance to the next potential task spawn.
+
+
+  3. Advanced Battery Intelligence
+   * Round-Trip Feasibility: Before accepting a task, the truck calculates: Dist(to_pickup) + Dist(to_drop) + Dist(nearest_dock). If Total_Dist > Current_Battery, it rejects
+     the task even if it's above 20%.
+   * Opportunity Charging: If a truck is at 70% and there are no active tasks, it goes to charge now rather than waiting for Low Power mode.
+
+
+  4. Harmonious Task Allocation
+   * Global Optimization: Instead of "Nearest Truck to Task," use "Minimum Total Fleet Travel." (e.g., Robot A is 5m away, but Robot B is 6m away and heading in that
+     direction anyway—Robot B takes it).
+   * Chain Loading: If two tasks have pickup points near each other, one truck is assigned both to reduce travel "deadhead" time.
+
+
+  5. Visual Synchrony
+   * Fleet HUD: A 2D overlay showing all 4 trucks' status (Battery, State, Destination) simultaneously so the user doesn't have to check the console.
+   * Path Visualization: Ghost lines on the floor showing the intended path of each truck to visually confirm harmony.
