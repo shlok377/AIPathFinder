@@ -85,26 +85,6 @@ class AppConfig:
 # CLASSES
 # ==========================================
 
-class PathVisualizer(Entity):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.dots = []
-
-    def draw_path(self, path, color):
-        self.clear()
-        if not path: return
-        for i, pos in enumerate(path):
-            if i % 2 == 0: # Draw every 2nd node to reduce entity count
-                world_pos = Vec3(pos[0] * AppConfig.CELL_SCALE[0], 0.05, pos[1] * AppConfig.CELL_SCALE[2])
-                dot = Entity(model='quad', position=world_pos, rotation_x=90, 
-                             scale=0.5, color=color, alpha=0.3, unlit=True)
-                self.dots.append(dot)
-
-    def clear(self):
-        for d in self.dots:
-            destroy(d)
-        self.dots = []
-
 class ChargingDock(Entity):
     def __init__(self, index, world_x, world_z, assigned_robot_id, pair_color, **kwargs):
         world_y = 1.05
@@ -170,20 +150,63 @@ class Robot(Entity):
         self.wait_timer = 0
         self.battery = 100.0
         self.is_charging_session = False
-        self.visualizer = PathVisualizer()
 
         if not self.model:
             self.model = 'cube'
             self.color = color.blue
             self.scale = (1, 1, 1)
 
-    def update(self):
-        # Path Visualization
-        if self.current_path:
-            self.visualizer.draw_path(self.current_path, self.color)
-        else:
-            self.visualizer.clear()
+    @property
+    def priority(self):
+        # 3: Emergency Return (battery < 10%)
+        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD:
+            return 3
+        # 2: Carrying Package
+        if self.package_visual.enabled:
+            return 2
+        # 1: On Task (to pickup)
+        if self.state == 'TO_PICKUP':
+            return 1
+        # 0: Idle/Returning/Staging
+        return 0
 
+    def repath_around_obstacles(self):
+        if not self.current_path:
+            return None
+
+        # Determine current goal based on state
+        goal = None
+        if self.state == 'TO_PICKUP' and self.current_task:
+            goal = (int(round(self.current_task['pickup_pos'][0] / AppConfig.CELL_SCALE[0])), 
+                    int(round(self.current_task['pickup_pos'][2] / AppConfig.CELL_SCALE[2])))
+        elif self.state == 'TO_DROP' and self.current_task:
+            goal = (int(round(self.current_task['drop_pos'][0] / AppConfig.CELL_SCALE[0])), 
+                    int(round(self.current_task['drop_pos'][2] / AppConfig.CELL_SCALE[2])))
+        elif self.state == 'RETURNING':
+            goal = self.home_pos
+            
+        if not goal:
+            return None
+
+        my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+        
+        # Build avoid list: current positions of all other robots
+        avoid_grids = [(int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2]))) 
+                      for r in self.manager.robots if r != self]
+        
+        # ALSO avoid the immediate future paths of robots with higher priority (to prevent cutting them off)
+        for other in self.manager.robots:
+            if other != self:
+                if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
+                    # Avoid their next 3 intended steps
+                    avoid_grids.extend(other.current_path[:3])
+        
+        new_path = self.manager.pathfinder.find_path(my_grid, goal, avoid=avoid_grids)
+        if new_path:
+            return new_path
+        return None
+
+    def update(self):
         # Battery Logic
         is_moving = len(self.current_path) > 0 and self.state not in ['WAITING_PICKUP', 'WAITING_DROP']
         
@@ -247,25 +270,98 @@ class Robot(Entity):
         if not self.current_path:
             return
 
-        # Traffic Yielding: Check if next node is occupied by another robot
-        next_grid_pos = self.current_path[0]
+        # PREDICTIVE TRAFFIC MANAGEMENT
+        look_ahead = 5
+        my_path_segment = self.current_path[:look_ahead]
+        blocked = False
+        threat = None
+        
+        my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+
         for other in self.manager.robots:
-            if other != self:
-                other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
-                if other_grid == next_grid_pos:
-                    # Someone is in our way, wait here
+            if other == self: continue
+            
+            other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
+            other_path_segment = other.current_path[:look_ahead]
+            
+            # 1. Is there a higher priority robot approaching MY current cell?
+            if my_grid in other_path_segment[:3]:
+                # Someone higher prio is coming here. I should move out of the way or re-route.
+                if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
+                    blocked = True
+                    threat = other
+                    break
+
+            # 2. Is there a robot in MY path segment?
+            collision_cell = None
+            if other_grid in my_path_segment:
+                collision_cell = other_grid
+            else:
+                # 3. Do our future paths intersect at the same time/step?
+                for i, cell in enumerate(my_path_segment):
+                    if i < len(other_path_segment) and cell == other_path_segment[i]:
+                        collision_cell = cell
+                        break
+            
+            if collision_cell:
+                # Resolve conflict based on priority
+                if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
+                    blocked = True
+                    threat = other
+                    break
+
+        if blocked:
+            # Instant Re-routing
+            new_path = self.repath_around_obstacles()
+            if new_path:
+                print(f"Robot {self.robot_id} PREDICTIVE RE-ROUTING around Robot {threat.robot_id}")
+                self.current_path = new_path
+            else:
+                # Yielding Logic with Gap Maintenance (ensure 1-block gap)
+                other_pos = (int(round(threat.x / AppConfig.CELL_SCALE[0])), int(round(threat.z / AppConfig.CELL_SCALE[2])))
+                other_next = threat.current_path[0] if threat.current_path else None
+                
+                # Hard block: they are in or moving to our NEXT cell
+                if next_grid_pos == other_pos or next_grid_pos == other_next:
+                    return
+
+                # 1-Block Gap Maintenance: they are in the cell AFTER our next cell
+                if len(self.current_path) > 1 and self.current_path[1] == other_pos:
+                    # To maintain a 1-block gap, we must stop at our CURRENT position if someone is at my_path[1]
+                    # Because my_path[0] is the 1-block gap.
                     return
 
         # Movement target
+        next_grid_pos = self.current_path[0]
         world_target = Vec3(next_grid_pos[0] * AppConfig.CELL_SCALE[0], 0, next_grid_pos[1] * AppConfig.CELL_SCALE[2])
         
+        # BRAKE-CHECK PREVENTION: Dynamic Speed Adjustment
+        # Slow down as we approach the target if someone is further along our path
+        target_speed = AppConfig.ROBOT_MOVE_SPEED
+        look_ahead_speed = 3
+        for i in range(min(len(self.current_path), look_ahead_speed)):
+            check_cell = self.current_path[i]
+            for other in self.manager.robots:
+                if other == self: continue
+                other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
+                if other_grid == check_cell:
+                    # Someone is ahead. Calculate distance to them to adjust speed.
+                    dist_to_other = distance(self.position, other.position)
+                    # Ideal gap is AppConfig.CELL_SCALE[0] * 2 (one empty cell between us)
+                    safety_dist = AppConfig.CELL_SCALE[0] * 1.5
+                    if dist_to_other < safety_dist:
+                        # Smoothly slow down to match their potential stop
+                        speed_factor = clamp(dist_to_other / safety_dist, 0.1, 1.0)
+                        target_speed *= speed_factor
+                    break
+
         # Smooth Rotation
         target_rot_y = atan2(world_target.x - self.x, world_target.z - self.z) * 180 / pi
         self.rotation_y = lerp_angle(self.rotation_y, target_rot_y, time.dt * AppConfig.ROBOT_ROTATION_SPEED)
         
         dist = distance(self.position, world_target)
         if dist > 0.1:
-            self.position += self.forward * AppConfig.ROBOT_MOVE_SPEED * time.dt
+            self.position += self.forward * target_speed * time.dt
         else:
             self.position = world_target
             self.current_path.pop(0)
