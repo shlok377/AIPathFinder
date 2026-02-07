@@ -91,3 +91,76 @@
       "intent" of every unit in the fleet.
    5. Optimized HUD: The Fleet HUD now uses a more compact layout with 1.7x text scaling and updated positioning, providing a clear overview of which trucks are active and
       which are in a charging session.
+
+
+
+
+
+Version3 Optimization:
+
+   1. Priority-Based Right-of-Way:
+       * Trucks with packages have priority over empty trucks. 
+       * Trucks returning for emergency charging (battery < 10%) have absolute priority.
+       * Lower priority trucks must move to an adjacent walkable cell or pause if they detect a higher priority truck approaching.
+
+
+   2. Path Reservation (Spatial-Temporal Check):
+       * When a truck calculates a path, it "books" its coordinates in a global FleetRegistry.
+       * Other trucks check this registry and treat the immediate next 3 steps of other trucks as obstacles during their own pathfinding.
+
+
+   3. Head-on Deadlock Detection & Re-routing:
+       * If two trucks are adjacent and facing each other, the one with lower priority will recalculate its path with the other truck's position marked as a hard obstacle.
+       * If no alternate path exists, the lower priority truck will "back up" one cell to reach a junction where it can let the other pass.
+
+
+   4. Aisle Entry Locks:
+       * Before entering a narrow aisle (vertical column between shelves), a truck must check if another truck is already in that aisle moving in the opposite direction.
+       * If so, it waits at the entrance until the aisle is clear.
+
+
+   5. Wait-Time Limit (Force Re-plan):
+       * If a truck is paused for more than 2 seconds by the "Yield" logic, it assumes a deadlock and forces a complete path re-calculation, treating all other trucks as
+         obstacles.
+
+
+
+
+
+
+
+
+Current Status:
+
+Strengths (Why you're competitive):
+   1. Technical Depth: You aren't just making a visual demo; you have implemented real algorithms. A* pathfinding, state machines, dynamic battery management, and grid-based
+      persistence are solid engineering pillars.
+   2. Scalability: The recent refactor to remove the 24-task limit and the "recyclable pool" system demonstrates foresight—judges love systems that scale.
+   3. Real-World Constraints: The battery logic (emergency drops, recharge targets, predictive feasibility) mimics real industrial challenges (Amazon Kiva systems, etc.).
+      This adds significant "business value" points.
+   4. Visual Polish: Even without the ghost trails, the dual-mode camera and the Ursina-based 3D environment look much better than a standard 2D grid simulation.
+
+
+Weaknesses (What could keep you out of Top 5):
+   1. The Deadlock Issue: This is the critical flaw. In a "Multi-Agent" system, seeing agents get stuck head-to-head looks like a failure of the core premise. A robust
+      traffic manager is non-negotiable for a top tier.
+   2. Lack of "Smart" Optimization: Currently, tasks are assigned to the nearest available robot. A winning algorithm would use cost functions: "Robot A is further away but
+      has 90% battery, while Robot B is closer but has 30% and might fail mid-task." You have some of this with the feasibility check, but global optimization (like the
+      auction system we discussed) is the "wow" factor.
+   3. UI/UX Feedback: The HUD is functional, but judges might want to see metrics. "Packages Delivered Per Minute," "Average Wait Time," or "Total Energy Consumed." Data
+      visualization makes the efficiency of your code undeniable.
+
+
+Verdict:
+  With the current setup + a working Traffic Manager (specifically one that handles head-on deadlocks elegantly), I would place this project in the Top 10-15%.
+
+
+To crack the Top 5:
+  You need one "Killer Feature" that goes beyond standard logistics.
+   * Recommendation: Implement Dynamic Re-Routing. If a user clicks to place an obstacle in front of a moving truck, the truck should instantly react and pathfind around it.
+     Or, implement the "Aisle Locking" logic, which visually demonstrates advanced coordination (one robot waiting at the "mouth" of an aisle for another to exit). This kind
+     of emergent behavior reads as "Intelligence" rather than just "Scripting."
+
+
+My advice: Let's nail that Traffic Manager perfectly. A simulation that runs indefinitely without jamming is impressive. A simulation that jams after 3 minutes loses the
+  audience.
