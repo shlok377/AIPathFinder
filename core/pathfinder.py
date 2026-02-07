@@ -9,15 +9,18 @@ class PathFinder:
         # Manhattan distance
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def get_neighbors(self, pos, goal):
+    def get_neighbors(self, pos, goal, avoid=None):
         neighbors = []
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             x, y = pos[0] + dx, pos[1] + dy
+            # Skip if cell is in avoid list (unless it's the goal itself)
+            if avoid and (x, y) in avoid and (x, y) != goal:
+                continue
             if self.gm.is_walkable(x, y, goal, start_pos=pos):
                 neighbors.append((x, y))
         return neighbors
 
-    def find_path(self, start, goal):
+    def find_path(self, start, goal, avoid=None):
         # start and goal are (x, y) grid coordinates
         if start == goal:
             return [goal]
@@ -36,7 +39,7 @@ class PathFinder:
             if current == goal:
                 break
 
-            for next_node in self.get_neighbors(current, goal):
+            for next_node in self.get_neighbors(current, goal, avoid):
                 # Calculate movement cost
                 move_cost = 1
                 
