@@ -77,6 +77,7 @@ class AppConfig:
     BATTERY_LOW_THRESHOLD = 20.0 # Refuse new tasks below this
     BATTERY_RECHARGE_TARGET = 80.0 # Stay at dock until this level
     BATTERY_CRITICAL_THRESHOLD = 10.0 # Forced return below this
+    CHARGING_DISTANCE = 2.5      # Distance to dock to allow charging (increased for front-parking)
 
     # Staging Points (for idle high-battery trucks)
     STAGING_POINTS = [(6, 6), (18, 6), (6, 18), (18, 18)]
@@ -146,6 +147,7 @@ class Robot(Entity):
         # State Management
         self.state = 'IDLE' # IDLE, TO_PICKUP, WAITING_PICKUP, TO_DROP, WAITING_DROP, RETURNING
         self.current_path = []
+        self.alt_path = [] # PLAN B: Pre-calculated alternative route
         self.current_task = None
         self.wait_timer = 0
         self.battery = 100.0
@@ -170,7 +172,7 @@ class Robot(Entity):
         # 0: Idle/Returning/Staging
         return 0
 
-    def repath_around_obstacles(self):
+    def repath_around_obstacles(self, extra_avoid=None):
         if not self.current_path:
             return None
 
@@ -200,6 +202,9 @@ class Robot(Entity):
                 if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
                     # Avoid their next 3 intended steps
                     avoid_grids.extend(other.current_path[:3])
+        
+        if extra_avoid:
+            avoid_grids.extend(extra_avoid)
         
         new_path = self.manager.pathfinder.find_path(my_grid, goal, avoid=avoid_grids)
         if new_path:
@@ -258,6 +263,22 @@ class Robot(Entity):
             self.is_charging_session = True
             self.start_return_home_phase()
 
+        # DOCK RESERVATION VERIFICATION: If returning, make sure our dock is still available/assigned to us
+        if self.state == 'RETURNING' and self.home_pos:
+            # Check if someone higher priority has claimed our dock
+            best_dock = self.manager.get_nearest_unoccupied_dock(self)
+            if best_dock != self.home_pos:
+                if best_dock:
+                    print(f"Robot {self.robot_id} REDIRECTING to better dock at {best_dock}")
+                    self.home_pos = best_dock
+                    start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+                    self.current_path = self.manager.pathfinder.find_path(start, self.home_pos)
+                else:
+                    # No docks available anymore!
+                    print(f"Robot {self.robot_id} lost dock reservation and none available!")
+                    self.state = 'IDLE'
+                    self.current_path = []
+
         if self.state in ['WAITING_PICKUP', 'WAITING_DROP']:
             self.wait_timer -= time.dt
             if self.wait_timer <= 0:
@@ -275,6 +296,7 @@ class Robot(Entity):
         my_path_segment = self.current_path[:look_ahead]
         blocked = False
         threat = None
+        self.alt_path = [] # Reset Plan B each frame for fresh calculation
         
         my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
 
@@ -284,9 +306,18 @@ class Robot(Entity):
             other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
             other_path_segment = other.current_path[:look_ahead]
             
+            # Goal-Aware Prediction: If someone is about to stop at a pickup/drop point in my path
+            if other.state in ['TO_PICKUP', 'TO_DROP', 'RETURNING'] and other.current_path:
+                dest = other.current_path[-1]
+                if dest in my_path_segment:
+                    # They will stop at 'dest' soon. Prepare Plan B early.
+                    if not self.alt_path:
+                        self.alt_path = self.repath_around_obstacles(extra_avoid=[dest])
+                        if self.alt_path:
+                            print(f"Robot {self.robot_id} Plan B READY (Goal Conflict with Robot {other.robot_id} at {dest})")
+
             # 1. Is there a higher priority robot approaching MY current cell?
             if my_grid in other_path_segment[:3]:
-                # Someone higher prio is coming here. I should move out of the way or re-route.
                 if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
                     blocked = True
                     threat = other
@@ -304,31 +335,26 @@ class Robot(Entity):
                         break
             
             if collision_cell:
-                # Resolve conflict based on priority
                 if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
                     blocked = True
                     threat = other
                     break
 
         if blocked:
-            # Instant Re-routing
-            new_path = self.repath_around_obstacles()
+            # Quick Action: Use Plan B if ready, otherwise re-route now
+            new_path = self.alt_path if self.alt_path else self.repath_around_obstacles()
             if new_path:
-                print(f"Robot {self.robot_id} PREDICTIVE RE-ROUTING around Robot {threat.robot_id}")
+                print(f"Robot {self.robot_id} QUICK ACTION: Switching to alternative route.")
                 self.current_path = new_path
             else:
                 # Yielding Logic with Gap Maintenance (ensure 1-block gap)
                 other_pos = (int(round(threat.x / AppConfig.CELL_SCALE[0])), int(round(threat.z / AppConfig.CELL_SCALE[2])))
                 other_next = threat.current_path[0] if threat.current_path else None
                 
-                # Hard block: they are in or moving to our NEXT cell
-                if next_grid_pos == other_pos or next_grid_pos == other_next:
+                if self.current_path[0] == other_pos or self.current_path[0] == other_next:
                     return
 
-                # 1-Block Gap Maintenance: they are in the cell AFTER our next cell
                 if len(self.current_path) > 1 and self.current_path[1] == other_pos:
-                    # To maintain a 1-block gap, we must stop at our CURRENT position if someone is at my_path[1]
-                    # Because my_path[0] is the 1-block gap.
                     return
 
         # Movement target
@@ -336,7 +362,6 @@ class Robot(Entity):
         world_target = Vec3(next_grid_pos[0] * AppConfig.CELL_SCALE[0], 0, next_grid_pos[1] * AppConfig.CELL_SCALE[2])
         
         # BRAKE-CHECK PREVENTION: Dynamic Speed Adjustment
-        # Slow down as we approach the target if someone is further along our path
         target_speed = AppConfig.ROBOT_MOVE_SPEED
         look_ahead_speed = 3
         for i in range(min(len(self.current_path), look_ahead_speed)):
@@ -345,12 +370,9 @@ class Robot(Entity):
                 if other == self: continue
                 other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
                 if other_grid == check_cell:
-                    # Someone is ahead. Calculate distance to them to adjust speed.
                     dist_to_other = distance(self.position, other.position)
-                    # Ideal gap is AppConfig.CELL_SCALE[0] * 2 (one empty cell between us)
                     safety_dist = AppConfig.CELL_SCALE[0] * 1.5
                     if dist_to_other < safety_dist:
-                        # Smoothly slow down to match their potential stop
                         speed_factor = clamp(dist_to_other / safety_dist, 0.1, 1.0)
                         target_speed *= speed_factor
                     break
@@ -607,7 +629,10 @@ class TaskSystem(Entity):
                 if not path_to_drop: continue
                 
                 # Find nearest dock from drop-off to ensure return is possible
-                nearest_dock = self.get_nearest_unoccupied_dock(task['drop_pos'])
+                # Pass the robot to ensure its current dock is considered potentially available
+                nearest_dock = self.get_nearest_unoccupied_dock(task['drop_pos'], requesting_robot=robot)
+                if not nearest_dock: continue
+                
                 path_to_dock = self.pathfinder.find_path(drop_grid, nearest_dock)
                 
                 total_trip_dist = len(path_to_pickup) + len(path_to_drop) + len(path_to_dock)
@@ -656,26 +681,54 @@ class TaskSystem(Entity):
             (int(round(task['pickup_pos'][0] / self.scale_x)), int(round(task['pickup_pos'][2] / self.scale_z)))
         )
 
-    def get_nearest_unoccupied_dock(self, robot_pos):
+    def get_nearest_unoccupied_dock(self, source, requesting_robot=None):
         best_dock = None
         min_dist = float('inf')
         
-        # Grid position of robots currently returning to docks
-        occupied_target_docks = [r.home_pos for r in self.robots if r.state == 'RETURNING' and r.home_pos]
+        # Robust handling of source (can be Robot or Vec3)
+        pos = source.position if hasattr(source, 'position') else source
+        
+        # If requesting_robot is not explicitly provided, check if source is a Robot
+        if requesting_robot is None and hasattr(source, 'robot_id'):
+            requesting_robot = source
+            
+        # Grid positions of docks already claimed or occupied
+        occupied_target_docks = []
+        for r in self.robots:
+            if requesting_robot and r == requesting_robot: continue # Don't block yourself
+            
+            # Claimed by someone returning
+            if r.state == 'RETURNING' and r.home_pos:
+                if requesting_robot is None:
+                    # Generic check: treat all claimed as occupied
+                    occupied_target_docks.append(r.home_pos)
+                else:
+                    # Stability Tie-breaker: Higher priority or lower ID takes precedence
+                    if r.priority > requesting_robot.priority or (r.priority == requesting_robot.priority and r.robot_id < requesting_robot.robot_id):
+                        occupied_target_docks.append(r.home_pos)
+            
+            # Occupied by someone already there
+            elif r.state in ['IDLE', 'WAITING_PICKUP', 'WAITING_DROP']:
+                r_grid = (int(round(r.x / self.scale_x)), int(round(r.z / self.scale_z)))
+                for dock in self.docks:
+                    d_grid = (int(round(dock.x / self.scale_x)), int(round(dock.z / self.scale_z)))
+                    if r_grid == d_grid:
+                        occupied_target_docks.append(d_grid)
+                        break
+
+        # Stickiness: If we are a robot and our current dock is still valid for us, keep it
+        if requesting_robot and requesting_robot.home_pos and requesting_robot.home_pos not in occupied_target_docks:
+            return requesting_robot.home_pos
 
         for dock in self.docks:
             dock_grid = (int(round(dock.x / self.scale_x)), int(round(dock.z / self.scale_z)))
             if dock_grid not in occupied_target_docks:
-                dist = distance(robot_pos, dock.position)
+                dist = distance(pos, dock.position)
                 if dist < min_dist:
                     min_dist = dist
                     best_dock = dock_grid
                     
-        if best_dock:
-            return best_dock
-        else:
-            # Fallback to the first dock's grid coordinates
-            return (int(round(self.docks[0].x / self.scale_x)), int(round(self.docks[0].z / self.scale_z)))
+        return best_dock
 
 class TopDownCamera(Entity):
     def __init__(self, **kwargs):
