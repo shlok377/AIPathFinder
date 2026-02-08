@@ -1,0 +1,14 @@
+{
+    "metadata": {
+        "sync_time": "20:13:34",
+        "elapsed_time": "495s",
+        "workflow_formula": "(Deliveries * 10) / (Minutes + Conflicts + 1)",
+        "battery_formula": "(Deliveries * 100) / (Total % Drained)"
+    },
+    "kpis": {
+        "workflow_efficiency": "24.1%",
+        "battery_efficiency": "5.82 pts",
+        "deliveries": 76,
+        "fleet_battery": "55%"
+    }
+}

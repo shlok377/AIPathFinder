@@ -1,0 +1,36 @@
+{
+    "cloud_metadata": {
+        "project_id": "google-ambassador-hackathon-2026",
+        "cluster": "asia-south1-warehouse-a",
+        "sync_time": "18:43:11"
+    },
+    "fleet_kpis": {
+        "efficiency_score": "20.4%",
+        "uptime": "155s",
+        "total_deliveries": 17,
+        "active_conflicts": 829,
+        "fleet_battery_avg": "100%"
+    },
+    "robot_states": [
+        {
+            "id": 0,
+            "state": "IDLE",
+            "battery": "100%"
+        },
+        {
+            "id": 1,
+            "state": "IDLE",
+            "battery": "100%"
+        },
+        {
+            "id": 2,
+            "state": "IDLE",
+            "battery": "100%"
+        },
+        {
+            "id": 3,
+            "state": "IDLE",
+            "battery": "100%"
+        }
+    ]
+}
