@@ -22,7 +22,7 @@ class AppConfig:
     FLOOR_TEXTURE_FILE = 'white_cube'
     
     # Grid Settings
-    DEFAULT_WIDTH = 25
+    DEFAULT_WIDTH = 40
     DEFAULT_HEIGHT = 25
     CELL_SCALE = (2, 2, 2)
     
@@ -71,16 +71,32 @@ class AppConfig:
 
     # Battery Settings
     BATTERY_DRAIN_MOVE = 1.0     # % per second while moving
-    BATTERY_DRAIN_PASSIVE = 0.1  # % per second while idling
+    BATTERY_DRAIN_PASSIVE = 0.2  # % per second while idling
     BATTERY_CHARGE_RATE = 3.0    # % per second while charging
     BATTERY_LOG_INTERVAL = 2.0   # seconds between logs
-    BATTERY_LOW_THRESHOLD = 20.0 # Refuse new tasks below this
+    BATTERY_LOW_THRESHOLD = 25.0 # Refuse new tasks below this
     BATTERY_RECHARGE_TARGET = 80.0 # Stay at dock until this level
-    BATTERY_CRITICAL_THRESHOLD = 10.0 # Forced return below this
-    CHARGING_DISTANCE = 2.5      # Distance to dock to allow charging (increased for front-parking)
+    BATTERY_CRITICAL_THRESHOLD = 13.0 # Forced return below this
+    CHARGING_DISTANCE = 3.5      # Distance to dock to allow charging (increased for front-parking)
+    HARD_COLLISION_DISTANCE = 1.4 # Minimum physical distance allowed between robot centers
+    ROBOT_BRAKING_SENSITIVITY = 3.5 # Multiplier for distance to start slowing down
+    ROBOT_MIN_SPEED_FACTOR = 0.02 # Minimum speed factor while slowing down (0.02 = 2%)
+
+    # Dock/Parking Area Settings
+    DOCK_ZONE_THRESHOLD = 3      # Distance (in grid cells) to consider as "docking area"
+    PARKING_LANE_Z = 1           # Grid Z coordinate for parking spots (in front of docks at Z=0)
 
     # Staging Points (for idle high-battery trucks)
     STAGING_POINTS = [(6, 6), (18, 6), (6, 18), (18, 18)]
+
+    # Cargo Settings
+    CARGO_FLOOR_SCALE = (0.5, 0.5, 0.5)
+    CARGO_TRUCK_SCALE = (1.5, 1.5, 1.5)
+    CARGO_TRUCK_X_OFFSET = 0.0
+    CARGO_TRUCK_Z_OFFSET = -0.5
+    CARGO_TRUCK_Y_POS = 1.6
+    CARGO_ANIM_DURATION = 1.3
+    CARGO_ANIM_CURVE = curve.out_back # Bouncy Bezier-like curve
 
 # ==========================================
 # CLASSES
@@ -126,23 +142,8 @@ class Robot(Entity):
         self.name = f"Robot_{index}"
         self.home_pos = home_pos
         
-        # Package visual (matches truck size and pivot)
-        self.package_visual = Entity(
-            parent=self,
-            model=AppConfig.PACKAGE_MODEL_FILE,
-            scale=(1, 1, 1), 
-            position=(0, 0.8, 0), # Lifted higher to avoid being inside the truck body
-            enabled=False,
-            double_sided=True,
-            unlit=True # Ensure it's visible even without perfect lighting
-        )
-        
-        # Diagnostic Fallback
-        if not self.package_visual.model:
-            print(f"Robot {index}: Package model '{AppConfig.PACKAGE_MODEL_FILE}' load failed. Using fallback cube.")
-            self.package_visual.model = 'cube'
-            self.package_visual.scale = (1.2, 0.8, 1.2)
-            self.package_visual.position = (0, 1.0, 0)
+        # This will hold the actual entity picked up from the floor
+        self.cargo = None
         
         # State Management
         self.state = 'IDLE' # IDLE, TO_PICKUP, WAITING_PICKUP, TO_DROP, WAITING_DROP, RETURNING
@@ -152,6 +153,15 @@ class Robot(Entity):
         self.wait_timer = 0
         self.battery = 100.0
         self.is_charging_session = False
+        self.stuck_timer = 0
+        self.backoff_timer = 0
+        self.dock_wait_timer = 0
+        self.zero_speed_timer = 0
+        self.deadlock_zone = []
+        self.braking_timer = 0
+        self.waiting_timer = 0
+        self.total_wait_timer = 0
+        self.last_pos = self.position
 
         if not self.model:
             self.model = 'cube'
@@ -164,7 +174,7 @@ class Robot(Entity):
         if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD:
             return 3
         # 2: Carrying Package
-        if self.package_visual.enabled:
+        if self.cargo:
             return 2
         # 1: On Task (to pickup)
         if self.state == 'TO_PICKUP':
@@ -193,32 +203,201 @@ class Robot(Entity):
         my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
         
         # Build avoid list: current positions of all other robots
-        avoid_grids = [(int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2]))) 
-                      for r in self.manager.robots if r != self]
-        
-        # ALSO avoid the immediate future paths of robots with higher priority (to prevent cutting them off)
+        avoid_grids = []
+        for r in self.manager.robots:
+            if r == self: continue
+            r_grid = (int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2])))
+            avoid_grids.append(r_grid)
+            
+            # If the robot is parked or idle, it's a static obstacle we MUST avoid
+            if r.state == 'IDLE' or not r.current_path:
+                # Add surrounding cells as well for extra safety if needed, but the cell itself is key
+                pass
+
+        # ALSO avoid the immediate future paths of robots with higher priority
         for other in self.manager.robots:
-            if other != self:
+            if other != self and other.current_path:
                 if other.priority > self.priority or (other.priority == self.priority and other.robot_id < self.robot_id):
-                    # Avoid their next 3 intended steps
+                    # Avoid their next few intended steps to prevent cutting them off
                     avoid_grids.extend(other.current_path[:3])
         
         if extra_avoid:
             avoid_grids.extend(extra_avoid)
+        
+        # Remove duplicates
+        avoid_grids = list(set(avoid_grids))
         
         new_path = self.manager.pathfinder.find_path(my_grid, goal, avoid=avoid_grids)
         if new_path:
             return new_path
         return None
 
+    def handle_dock_area_traffic(self):
+        # ADVANCED Separate Algorithm for Charging/Parking Zones
+        my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+        
+        # Buffer zone activation
+        if my_grid[1] > AppConfig.DOCK_ZONE_THRESHOLD + 1:
+            return False, None
+            
+        # CONGESTION DETECTION: Special wait for docking/parking region
+        # ONLY check for blockage if there is a stationary/slow robot in FRONT (next 2 blocks)
+        should_check_blockage = False
+        if self.current_path:
+            # Check next 2 blocks in path
+            for i in range(min(len(self.current_path), 2)):
+                check_grid = self.current_path[i]
+                for other in self.manager.robots:
+                    if other == self: continue
+                    other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), 
+                                  int(round(other.z / AppConfig.CELL_SCALE[2])))
+                    if other_grid == check_grid:
+                        # Found a robot in front. Is it slow or stopped?
+                        other_speed = distance(other.position, other.last_pos) / time.dt if time.dt > 0 else 0
+                        if other_speed < AppConfig.ROBOT_MOVE_SPEED * 0.5 or other.state in ['WAITING_PICKUP', 'WAITING_DROP', 'IDLE']:
+                            should_check_blockage = True
+                            break
+                if should_check_blockage: break
+
+        if should_check_blockage:
+            blocked_sides = 0
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                is_side_blocked = True
+                for dist in range(1, 3): # Check distance 1 and 2
+                    nx, ny = my_grid[0] + dx * dist, my_grid[1] + dy * dist
+                    
+                    cell_physically_blocked = False
+                    if not (0 <= nx < self.manager.width and 0 <= ny < self.manager.height):
+                        cell_physically_blocked = True # Out of bounds
+                    elif self.manager.grid_data[ny][nx] in [AppConfig.OBSTACLE_CHAR, AppConfig.DOCK_CHAR]:
+                        cell_physically_blocked = True # Physical Obstacle
+                    else:
+                        # Check if any robot is at this specific cell
+                        for other in self.manager.robots:
+                            if other == self: continue
+                            other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), 
+                                          int(round(other.z / AppConfig.CELL_SCALE[2])))
+                            if other_grid == (nx, ny):
+                                cell_physically_blocked = True
+                                break
+                    
+                    if not cell_physically_blocked:
+                        is_side_blocked = False
+                        break
+                
+                if is_side_blocked:
+                    blocked_sides += 1
+            
+            # Only trigger wait if we are actually blocked on 2-3 sides
+            if 2 <= blocked_sides <= 3:
+                if self.dock_wait_timer <= 0:
+                    print(f"Robot {self.robot_id} DOCK AREA CONGESTION ({blocked_sides} sides blocked). Robot in front slow/stopped. Waiting 1.5s.")
+                    self.dock_wait_timer = 1.5
+                    return True, None
+
+        if not self.current_path:
+            return False, None
+        
+        next_grid = self.current_path[0]
+
+        for other in self.manager.robots:
+            if other == self: continue
+            other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
+            
+            # 1. COLUMN EXCLUSIVITY (Entrance Control)
+            # If I am trying to enter a dock column (Z decreasing)
+            if my_grid[0] == other_grid[0] and next_grid[1] < my_grid[1]:
+                # If someone is already in the parking/exit corridor (Z <= 2)
+                if other_grid[1] <= 2:
+                    # If they are NOT already parked (they are either arriving or leaving)
+                    # or if they are in the spot I want
+                    if other.state != 'IDLE' or self.home_pos == other_grid:
+                        return True, other
+
+            # 2. EXIT PRIORITY (Dynamic)
+            # Trucks moving AWAY from docks (Z increasing) have absolute right-of-way
+            if other_grid[0] == my_grid[0] and other.current_path:
+                other_next = other.current_path[0]
+                if other_next[1] > other_grid[1]: # Other is moving OUT
+                    if my_grid[1] > other_grid[1]: # I am in their way (OUTSIDE them)
+                        return True, other
+
+            # 3. INTERLOCKING PREVENTION (Head-on in lanes Z=2, Z=3)
+            if my_grid[1] == other_grid[1] and abs(my_grid[0] - other_grid[0]) <= 2:
+                # If we are moving towards each other in the same lane
+                if other.current_path and self.current_path:
+                    if next_grid == other_grid or next_grid == other.current_path[0]:
+                        # Tie-breaker: ID
+                        if other.robot_id < self.robot_id:
+                            return True, other
+
+        return False, None
+
     def update(self):
+        # DOCK WAIT LOGIC: Special congestion pause
+        if self.dock_wait_timer > 0:
+            self.dock_wait_timer -= time.dt
+            return
+
+        # BACK-OFF LOGIC: If stuck for too long, move backwards to clear the deadlock
+        if self.backoff_timer > 0:
+            self.backoff_timer -= time.dt
+            # Calculate potential reverse position
+            move_step = self.forward * (AppConfig.ROBOT_MOVE_SPEED * 0.5) * time.dt
+            next_pos = self.position - move_step
+            
+            # Collision check for reverse: check grid-based obstacles and other robots
+            curr_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
+            rev_grid = (int(round(next_pos.x / AppConfig.CELL_SCALE[0])), int(round(next_pos.z / AppConfig.CELL_SCALE[2])))
+            
+            # 1. Grid Check (Shelves, Docks, Lane Restrictions)
+            can_reverse = self.manager.is_walkable(rev_grid[0], rev_grid[1], start_pos=curr_grid)
+            
+            # 2. Robot Check (Aggressive bubble)
+            if can_reverse:
+                for other in self.manager.robots:
+                    if other == self: continue
+                    if distance(next_pos, other.position) < AppConfig.HARD_COLLISION_DISTANCE:
+                        can_reverse = False
+                        break
+            
+            if can_reverse:
+                self.position = next_pos
+            else:
+                # If path is blocked behind us, stop reversing and trigger repath immediately
+                self.backoff_timer = 0
+            
+            # When back-off ends (or is cut short), force a repath that avoids the deadlock area
+            if self.backoff_timer <= 0:
+                print(f"Robot {self.robot_id} smart repath after back-off maneuver.")
+                new_path = self.repath_around_obstacles(extra_avoid=self.deadlock_zone)
+                if new_path:
+                    self.current_path = new_path
+                self.deadlock_zone = [] # Clear zone after use
+            return
+
+        # STUCK DETECTION
+        if len(self.current_path) > 0 and self.state not in ['WAITING_PICKUP', 'WAITING_DROP']:
+            if distance(self.position, self.last_pos) < 0.01:
+                self.stuck_timer += time.dt
+                if self.stuck_timer > 3.0: # If stuck for 3 seconds
+                    print(f"Robot {self.robot_id} DEADLOCK detected! Initiating back-off.")
+                    self.backoff_timer = 1.5 # Back off for 1.5 seconds
+                    self.stuck_timer = 0
+            else:
+                self.stuck_timer = 0
+        else:
+            self.stuck_timer = 0
+        
+        self.last_pos = self.position
+
         # Battery Logic
         is_moving = len(self.current_path) > 0 and self.state not in ['WAITING_PICKUP', 'WAITING_DROP']
         
         at_dock = False
         for dock in self.manager.docks:
             dist_xz = sqrt((self.x - dock.x)**2 + (self.z - dock.z)**2)
-            if dist_xz < 1.0:
+            if dist_xz < AppConfig.CHARGING_DISTANCE:
                 at_dock = True
                 break
 
@@ -291,7 +470,13 @@ class Robot(Entity):
         if not self.current_path:
             return
 
-        # PREDICTIVE TRAFFIC MANAGEMENT
+        # DOCK AREA SPECIALIZED TRAFFIC MANAGEMENT
+        dock_blocked, dock_threat = self.handle_dock_area_traffic()
+        if dock_blocked:
+            # Yield and wait
+            return
+
+        # PREDICTIVE TRAFFIC MANAGEMENT (Standard)
         look_ahead = 5
         my_path_segment = self.current_path[:look_ahead]
         blocked = False
@@ -361,26 +546,109 @@ class Robot(Entity):
         next_grid_pos = self.current_path[0]
         world_target = Vec3(next_grid_pos[0] * AppConfig.CELL_SCALE[0], 0, next_grid_pos[1] * AppConfig.CELL_SCALE[2])
         
-        # BRAKE-CHECK PREVENTION: Dynamic Speed Adjustment
+        # HARD PROXIMITY RADAR (Bullet-Proof Collision Avoidance)
+        hard_stop = False
+        threat = None
+        for other in self.manager.robots:
+            if other == self: continue
+            dist = distance(self.position, other.position)
+            # Use an aggressive bubble to ensure they NEVER touch
+            if dist < AppConfig.HARD_COLLISION_DISTANCE:
+                hard_stop = True
+                threat = other
+                break
+        
+        # BRAKE-CHECK & RECOVERY LOGIC
         target_speed = AppConfig.ROBOT_MOVE_SPEED
-        look_ahead_speed = 3
-        for i in range(min(len(self.current_path), look_ahead_speed)):
-            check_cell = self.current_path[i]
-            for other in self.manager.robots:
-                if other == self: continue
-                other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
-                if other_grid == check_cell:
-                    dist_to_other = distance(self.position, other.position)
-                    safety_dist = AppConfig.CELL_SCALE[0] * 1.5
-                    if dist_to_other < safety_dist:
-                        speed_factor = clamp(dist_to_other / safety_dist, 0.1, 1.0)
-                        target_speed *= speed_factor
-                    break
+        
+        if hard_stop:
+            target_speed = 0
+            self.zero_speed_timer += time.dt
+            
+            # DEADLOCK RESOLUTION: Hierarchy-based back-off
+            # Only the lower priority truck (or higher ID if same priority) backs off
+            is_lower_priority = (self.priority < threat.priority or 
+                                (self.priority == threat.priority and self.robot_id > threat.robot_id))
+            
+            if is_lower_priority and self.zero_speed_timer > 1.0:
+                print(f"Robot {self.robot_id} yielding to Robot {threat.robot_id}. Initiating Smart Back-off.")
+                self.backoff_timer = 1.5
+                self.zero_speed_timer = 0
+                
+                # Mark deadlock zone (3x3 grid around current position) to avoid during repath
+                gx, gz = int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2]))
+                deadlock_avoid = []
+                for dx in range(-1, 2):
+                    for dz in range(-1, 2):
+                        deadlock_avoid.append((gx + dx, gz + dz))
+                
+                self.deadlock_zone = deadlock_avoid 
+            
+            elif not is_lower_priority and self.zero_speed_timer > 0.7:
+                # NEW RULE: Even high priority re-paths after 0.7s instead of waiting
+                print(f"Robot {self.robot_id} (Priority) blocked for 0.7s. Force-Repathing.")
+                new_path = self.repath_around_obstacles()
+                if new_path: self.current_path = new_path
+                self.zero_speed_timer = 0
+        else:
+            self.zero_speed_timer = 0
+            # Dynamic Speed Adjustment (Standard)
+            look_ahead_speed = 3
+            obstacle_in_path = False
+            for i in range(min(len(self.current_path), look_ahead_speed)):
+                check_cell = self.current_path[i]
+                for other in self.manager.robots:
+                    if other == self: continue
+                    other_grid = (int(round(other.x / AppConfig.CELL_SCALE[0])), int(round(other.z / AppConfig.CELL_SCALE[2])))
+                    if other_grid == check_cell:
+                        dist_to_other = distance(self.position, other.position)
+                        safety_dist = AppConfig.CELL_SCALE[0] * AppConfig.ROBOT_BRAKING_SENSITIVITY
+                        if dist_to_other < safety_dist:
+                            obstacle_in_path = True
+                            # PHASED BRAKING LOGIC
+                            if self.braking_timer < 0.5:
+                                # Stage 1: Slow down (0.5s)
+                                self.braking_timer += time.dt
+                                speed_factor = clamp(dist_to_other / safety_dist, AppConfig.ROBOT_MIN_SPEED_FACTOR, 1.0)
+                                target_speed *= speed_factor
+                            elif self.waiting_timer < 0.7:
+                                # Stage 2: Wait/Stop (Now up to 0.7s total wait before repath)
+                                self.waiting_timer += time.dt
+                                target_speed = 0
+                                if self.waiting_timer >= 0.7:
+                                    print(f"Robot {self.robot_id} wait threshold (0.7s) exceeded. Force-Repathing.")
+                                    new_path = self.repath_around_obstacles()
+                                    if new_path: self.current_path = new_path
+                                    self.waiting_timer = 0
+                                    self.braking_timer = 0
+                            else:
+                                target_speed = 0
+                            break
+                if obstacle_in_path: break
+            
+            if not obstacle_in_path:
+                self.braking_timer = 0
+                self.waiting_timer = 0
 
         # Smooth Rotation
         target_rot_y = atan2(world_target.x - self.x, world_target.z - self.z) * 180 / pi
         self.rotation_y = lerp_angle(self.rotation_y, target_rot_y, time.dt * AppConfig.ROBOT_ROTATION_SPEED)
         
+        # TOTAL WAIT TRACKING (Non-movement time while on path)
+        if target_speed == 0 and self.dock_wait_timer <= 0:
+            self.total_wait_timer += time.dt
+            if self.total_wait_timer > 0.7:
+                print(f"Robot {self.robot_id} total wait threshold (0.7s) reached. Forcing dynamic repath.")
+                new_path = self.repath_around_obstacles()
+                if new_path:
+                    self.current_path = new_path
+                self.total_wait_timer = 0
+                self.braking_timer = 0
+                self.waiting_timer = 0
+                self.zero_speed_timer = 0
+        else:
+            self.total_wait_timer = 0
+
         dist = distance(self.position, world_target)
         if dist > 0.1:
             self.position += self.forward * target_speed * time.dt
@@ -393,28 +661,48 @@ class Robot(Entity):
 
     def on_reach_target(self):
         if self.state == 'TO_PICKUP':
-            print(f"Robot {self.robot_id} REACHED PICKUP {self.current_task['pickup_char']}. Enabling Package.")
+            print(f"Robot {self.robot_id} REACHED PICKUP {self.current_task['pickup_char']}. Loading Cargo...")
             self.state = 'WAITING_PICKUP'
             self.wait_timer = AppConfig.ROBOT_WAIT_TIME
-            if 'pickup_ent' in self.current_task:
-                self.current_task['pickup_ent'].visible = False
             
-            # Enable package visual
-            self.package_visual.enabled = True
-            self.package_visual.color = self.current_task['color']
+            task = self.current_task
+            if 'pickup_ent' in task:
+                # GRAB THE BOX: Reparent the visible box from the floor to the truck
+                self.cargo = task['pickup_ent'].cargo
+                self.cargo.parent = self
+                # Reset position relative to truck and animate into the bed
+                self.cargo.position = (AppConfig.CARGO_TRUCK_X_OFFSET, 0, AppConfig.CARGO_TRUCK_Z_OFFSET - 1.2) # Start behind truck
+                
+                # Bouncy Loading: Position + Scale
+                self.cargo.animate_position((AppConfig.CARGO_TRUCK_X_OFFSET, AppConfig.CARGO_TRUCK_Y_POS, AppConfig.CARGO_TRUCK_Z_OFFSET), 
+                                            duration=AppConfig.CARGO_ANIM_DURATION, curve=AppConfig.CARGO_ANIM_CURVE)
+                self.cargo.animate_scale(AppConfig.CARGO_TRUCK_SCALE, 
+                                         duration=AppConfig.CARGO_ANIM_DURATION, curve=AppConfig.CARGO_ANIM_CURVE)
+                
+                # Hide the floor marker and stick
+                task['pickup_ent'].marker.enabled = False
             
         elif self.state == 'TO_DROP':
-            print(f"Robot {self.robot_id} REACHED DROP {self.current_task['drop_char']}. Disabling Package.")
+            print(f"Robot {self.robot_id} REACHED DROP {self.current_task['drop_char']}. Unloading Cargo...")
             self.state = 'WAITING_DROP'
             self.wait_timer = AppConfig.ROBOT_WAIT_TIME
-            self.manager.complete_task(self.current_task)
             
-            # Disable package visual
-            self.package_visual.enabled = False
+            if self.cargo:
+                # Bouncy Unloading: Position + Scale back to original
+                self.cargo.animate_position((AppConfig.CARGO_TRUCK_X_OFFSET, 0, AppConfig.CARGO_TRUCK_Z_OFFSET - 1.5), 
+                                            duration=AppConfig.CARGO_ANIM_DURATION, curve=AppConfig.CARGO_ANIM_CURVE)
+                self.cargo.animate_scale(AppConfig.CARGO_FLOOR_SCALE, 
+                                         duration=AppConfig.CARGO_ANIM_DURATION, curve=AppConfig.CARGO_ANIM_CURVE)
+                
+            self.manager.complete_task(self.current_task)
             
         elif self.state == 'RETURNING':
             print(f"Robot {self.robot_id} PARKED at home {self.home_pos}")
             self.state = 'IDLE'
+            # If we still have cargo visual somehow, destroy it
+            if self.cargo:
+                destroy(self.cargo)
+                self.cargo = None
 
     def start_drop_off_phase(self):
         print(f"Robot {self.robot_id} moving to DROP {self.current_task['drop_char']}")
@@ -454,15 +742,29 @@ class Robot(Entity):
 
 class PickupPoint(Entity):
     def __init__(self, pos, pair_color, char, **kwargs):
-        super().__init__(
+        super().__init__(position=(pos[0], 0, pos[2]), **kwargs)
+        
+        # 1. The floor marker (remains on floor)
+        self.marker = Entity(
+            parent=self,
             model='cube',
-            position=(pos[0], 0.1, pos[2]),
-            scale=(1.2, 0.1, 1.2),
+            position=(0, 0.1, 0),
+            scale=(1.5, 0.05, 1.5),
             color=pair_color,
-            alpha=0.8,
-            **kwargs
+            alpha=0.5
         )
-        Entity(parent=self, model='cube', position=(0, 4, 0), scale=(0.5, 5, 0.5), color=pair_color)
+        # Vertical stick for visibility
+        Entity(parent=self.marker, model='cube', position=(0, 4, 0), scale=(0.2, 8, 0.2), color=pair_color, alpha=0.3)
+        
+        # 2. The Actual Cargo (this is what the robot will grab)
+        self.cargo = Entity(
+            parent=self,
+            model='cube',
+            position=(0, 0.5, 0),
+            scale=AppConfig.CARGO_FLOOR_SCALE,
+            color=pair_color,
+            texture='white_cube' # Using a texture makes it look more like a box
+        )
 
 class DropPoint(Entity):
     def __init__(self, pos, pair_color, char, **kwargs):
@@ -514,12 +816,17 @@ class TaskSystem(Entity):
     
     def is_walkable(self, x, y, goal=None, start_pos=None):
         if 0 <= x < self.width and 0 <= y < self.height:
-            if self.grid_data[y][x] == AppConfig.OBSTACLE_CHAR:
+            char = self.grid_data[y][x]
+            if char == AppConfig.OBSTACLE_CHAR:
+                return False
+            
+            # Treat docks as obstacles ALWAYS
+            if char == AppConfig.DOCK_CHAR:
                 return False
             
             # Parking lane restriction (y < 2)
             if y < 2:
-                # Allow if goal is in lane (docking/pickup in lane)
+                # Allow if goal is in lane (parking spot at Z=1)
                 if goal and goal[1] < 2:
                     return True
                 # Allow if already in lane (to move around or leave)
@@ -587,6 +894,13 @@ class TaskSystem(Entity):
                         self.pending_pickup = None
 
     def complete_task(self, task):
+        # Find the robot that had this task to destroy its cargo visual
+        for r in self.robots:
+            if r.current_task == task and r.cargo:
+                destroy(r.cargo, delay=0.7)
+                r.cargo = None
+                break
+                
         if 'pickup_ent' in task: destroy(task['pickup_ent'])
         if 'drop_ent' in task: destroy(task['drop_ent'])
         px, pz = int(round(task['pickup_pos'][0] / self.scale_x)), int(round(task['pickup_pos'][2] / self.scale_z))
@@ -692,41 +1006,40 @@ class TaskSystem(Entity):
         if requesting_robot is None and hasattr(source, 'robot_id'):
             requesting_robot = source
             
-        # Grid positions of docks already claimed or occupied
-        occupied_target_docks = []
+        # Grid positions of spots already claimed or occupied
+        occupied_target_spots = []
         for r in self.robots:
             if requesting_robot and r == requesting_robot: continue # Don't block yourself
             
             # Claimed by someone returning
             if r.state == 'RETURNING' and r.home_pos:
                 if requesting_robot is None:
-                    # Generic check: treat all claimed as occupied
-                    occupied_target_docks.append(r.home_pos)
+                    occupied_target_spots.append(r.home_pos)
                 else:
-                    # Stability Tie-breaker: Higher priority or lower ID takes precedence
+                    # Stability Tie-breaker
                     if r.priority > requesting_robot.priority or (r.priority == requesting_robot.priority and r.robot_id < requesting_robot.robot_id):
-                        occupied_target_docks.append(r.home_pos)
+                        occupied_target_spots.append(r.home_pos)
             
-            # Occupied by someone already there
+            # Occupied by someone already there (in the parking lane)
             elif r.state in ['IDLE', 'WAITING_PICKUP', 'WAITING_DROP']:
                 r_grid = (int(round(r.x / self.scale_x)), int(round(r.z / self.scale_z)))
-                for dock in self.docks:
-                    d_grid = (int(round(dock.x / self.scale_x)), int(round(dock.z / self.scale_z)))
-                    if r_grid == d_grid:
-                        occupied_target_docks.append(d_grid)
-                        break
+                if r_grid[1] == AppConfig.PARKING_LANE_Z:
+                    occupied_target_spots.append(r_grid)
 
-        # Stickiness: If we are a robot and our current dock is still valid for us, keep it
-        if requesting_robot and requesting_robot.home_pos and requesting_robot.home_pos not in occupied_target_docks:
-            return requesting_robot.home_pos
+        # Stickiness: If we are a robot and our current spot is still valid, keep it
+        if requesting_robot and requesting_robot.home_pos and requesting_robot.home_pos not in occupied_target_spots:
+            if requesting_robot.home_pos[1] == AppConfig.PARKING_LANE_Z:
+                return requesting_robot.home_pos
 
         for dock in self.docks:
-            dock_grid = (int(round(dock.x / self.scale_x)), int(round(dock.z / self.scale_z)))
-            if dock_grid not in occupied_target_docks:
+            # Parking spot is directly in front of the dock
+            parking_grid = (int(round(dock.x / self.scale_x)), AppConfig.PARKING_LANE_Z)
+            
+            if parking_grid not in occupied_target_spots:
                 dist = distance(pos, dock.position)
                 if dist < min_dist:
                     min_dist = dist
-                    best_dock = dock_grid
+                    best_dock = parking_grid
                     
         return best_dock
 
@@ -784,8 +1097,8 @@ class FleetHUD(Entity):
         
         self.info_texts = []
         for i in range(len(self.robots)):
-            # Increased scale to 2.4 (2x original 1.2) and adjusted vertical spacing
-            t = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.3 - (i * 0.2), scale=1.7)
+            # Adjusted scale and spacing for 7 trucks
+            t = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.35 - (i * 0.11), scale=1.3)
             self.info_texts.append(t)
             
         # Increased scale to 2.4 (2x original 1.2)
