@@ -31,7 +31,7 @@ class PathFinder:
         cost_so_far = {start: 0}
         
         # Penalty for making a turn to favor straight lines
-        TURN_PENALTY = 3.0
+        TURN_PENALTY = 2.0
 
         while frontier:
             current = heapq.heappop(frontier)[1]
