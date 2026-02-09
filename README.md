@@ -34,7 +34,7 @@ We moved beyond simple pathfinding. Our robots are **self-aware** agents.
 
 ### **The Logic Flow**
 
-```
+```mermaid
 graph TD;
   A[ Start: Robot Assigned Task] --> B{ Battery Level > 20%?};
   B -- Yes --> C[ Calculate A* Path to Shelf];
@@ -136,5 +136,6 @@ A clean architecture separates the simulation engine from the logical core.
 </p\>
 
 </small\>
+
 
 
