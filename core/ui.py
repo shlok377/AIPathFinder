@@ -1,4 +1,4 @@
-from ursina import Entity, Panel, Text, color, camera, held_keys, time, mouse, sin
+from ursina import Entity, Panel, Text, color, camera, held_keys, time, mouse
 from core.config import AppConfig
 from core.telemetry import cloud_logger
 
@@ -50,20 +50,36 @@ class FleetHUD(Entity):
         self.robots = robots
         self.ts = task_system
         
-        # Simple Panel
-        self.bg = Panel(scale=(0.4, 0.5), position=(0.78, 0.1), color=color.black66)
-        self.title = Text("FLEET STATUS", parent=self.bg, origin=(0,0), y=0.45, scale=2.0, color=color.azure)
+        # Expanded Panel for more stats
+        self.bg = Panel(scale=(0.4, 0.65), position=(0.78, 0.1), color=color.black66)
+        self.title = Text("FLEET DASHBOARD", parent=self.bg, origin=(0,0), y=0.46, scale=1.8, color=color.azure)
         
+        # Global Metrics Section
+        self.global_stats = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.38, scale=1.1, color=color.yellow)
+        
+        # Robot Status List
         self.info_texts = []
         for i in range(len(self.robots)):
-            t = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.35 - (i * 0.1), scale=1.2)
+            t = Text("", parent=self.bg, origin=(-0.5, 0), x=-0.45, y=0.18 - (i * 0.08), scale=1.0)
             self.info_texts.append(t)
             
-        self.queue_text = Text("", parent=self.bg, origin=(0,0), y=-0.4, scale=1.5, color=color.yellow)
+        self.queue_text = Text("", parent=self.bg, origin=(0,0), y=-0.45, scale=1.3, color=color.orange)
 
     def update(self):
+        # 1. Update Global Stats from Cloud Logger
+        m = cloud_logger._calculate_advanced_metrics()
+        self.global_stats.text = (
+            f"Utilization: {m['utilization']}%\n"
+            f"Avg Latency: {m['avg_latency']}s | Max: {m['max_latency']}s\n"
+            f"Near-Misses: {cloud_logger.total_near_misses}\n"
+            f"Energy Eff:  {m['kwh_eff']} kWh/job"
+        )
+
+        # 2. Update Individual Robots
         for i, robot in enumerate(self.robots):
-            self.info_texts[i].text = f"Truck {robot.robot_id}: {robot.state} | {int(robot.battery)}%"
+            state_str = robot.state.replace("_", " ").capitalize()
+            if robot.is_charging_session: state_str = "Charging"
+            self.info_texts[i].text = f"T{robot.robot_id}: {state_str.ljust(12)} | {int(robot.battery)}%"
             self.info_texts[i].color = color.white if robot.battery > 20 else color.red
 
         total_pending = len(self.ts.unassigned_tasks)

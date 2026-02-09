@@ -41,7 +41,18 @@ class AppConfig:
     ROBOT_COLOR = color.white 
     ROBOT_MOVE_SPEED = 5
     ROBOT_ROTATION_SPEED = 10
-    ROBOT_WAIT_TIME = 2
+    ROBOT_WAIT_TIME = 1.75
+
+    # Highway Physics & Economy (New)
+    HIGHWAY_SPEED = 7.0          # 2 higher than normal
+    HIGHWAY_DRAIN_MOVE = 2.0     # 1 higher than normal drain
+    
+    # Highway Geography
+    # Extreme columns (0,1 and width-2, width-1) and extreme end row (height-1, height-2)
+    # Middle columns (dependent on width)
+    FLYING_HIGHWAY_X = [0, 1]    # Will be extended in simulation based on width
+    FLYING_HIGHWAY_Z = []        # Will be calculated based on height
+    MID_HIGHWAY_X = []           # Will be calculated based on width
 
     # Charging Dock Settings
     DOCK_COLOR = color.white
@@ -68,7 +79,7 @@ class AppConfig:
     BATTERY_DRAIN_PASSIVE = 0.2  # % per second while idling
     BATTERY_CHARGE_RATE = 3.0    # % per second while charging
     BATTERY_LOG_INTERVAL = 2.0   # seconds between logs
-    BATTERY_LOW_THRESHOLD = 25.0 # Refuse new tasks below this
+    BATTERY_LOW_THRESHOLD = 27.0 # Refuse new tasks below this
     BATTERY_RECHARGE_TARGET = 80.0 # Stay at dock until this level
     BATTERY_CRITICAL_THRESHOLD = 13.0 # Forced return below this
     CHARGING_DISTANCE = 3.5      # Distance to dock to allow charging (increased for front-parking)
@@ -79,6 +90,15 @@ class AppConfig:
     # Dock/Parking Area Settings
     DOCK_ZONE_THRESHOLD = 3      # Distance (in grid cells) to consider as "docking area"
     PARKING_LANE_Z = 1           # Grid Z coordinate for parking spots (in front of docks at Z=0)
+
+    # Highway System (City Traffic Model)
+    # These grid coordinates have reduced traversal costs to encourage "Highway" use
+    HIGHWAY_Z = [3, 12, 22]      # Main East-West corridors
+    HIGHWAY_X = [2, 19, 37]      # Main North-South corridors
+    HIGHWAY_COST_DISCOUNT = 0.7  # Multiplier for movement cost on highways (lower is cheaper)
+    
+    # Lazy Re-planning Settings
+    LAZY_REPLAN_THRESHOLD = 10.0 # Wait up to 10 seconds before generating a massive detour
 
     # Staging Points (for idle high-battery trucks)
     STAGING_POINTS = [(6, 6), (18, 6), (6, 18), (18, 18)]
