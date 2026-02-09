@@ -58,7 +58,7 @@ Where:
 * $h(n)$: Estimated distance to target shelf.  
 * $P(b)$: Exponential penalty based on current battery charge level ($100 - b$).
 
-<div align="left"\>
+
 ## **📂 Project Structure**
 
 A clean architecture separates the simulation engine from the logical core.  
@@ -136,4 +136,5 @@ A clean architecture separates the simulation engine from the logical core.
 </p\>
 
 </small\>
+
 
