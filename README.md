@@ -36,14 +36,14 @@ We moved beyond simple pathfinding. Our robots are **self-aware** agents.
 
 ```mermaid
 graph TD;
-  A[ "Start: Robot Assigned Task"] --> B{ "Battery Level > 20%?"};
-  B -- Yes --> C[ "Calculate A* Path to Shelf"];
-  B -- No --> D[ "Calculate Path to Charging Station"];
-  C --> E[ "Move to Target Node"];
-  D --> F[ "Charge Sequence Initiated"];
-  E --> G{ "Obstacle Detected?"};
-  G -- Yes --> H[ "Recalculate Path (Local Avoidance)"];
-  G -- No --> I[ "Task Complete"];
+  A["Start: Robot Assigned Task"] --> B{"Battery Level > 20%?"};
+  B -- Yes --> C["Calculate A* Path to Shelf"];
+  B -- No --> D["Calculate Path to Charging Station"];
+  C --> E["Move to Target Node"];
+  D --> F["Charge Sequence Initiated"];
+  E --> G{"Obstacle Detected?"};
+  G -- Yes --> H["Recalculate Path (Local Avoidance)"];
+  G -- No --> I["Task Complete"];
   F --> A;
   H --> E;
   ```
@@ -136,6 +136,7 @@ A clean architecture separates the simulation engine from the logical core.
 </p\>
 
 </small\>
+
 
 
 
