@@ -59,7 +59,7 @@ Where:
 * $P(b)$: Exponential penalty based on current battery charge level ($100 - b$).
 
 ## **📂 Project Structure**
-
+```
 A clean architecture separates the simulation engine from the logical core.  
 📂 Project Root  
 ├── 📂 core/  
@@ -72,7 +72,7 @@ A clean architecture separates the simulation engine from the logical core.
 ├── 📄 main.py                # Entry point (Simulation Loop)  
 ├── 📄 warehouse_layout.txt   # Configurable map file  
 └── 📄 requirements.txt       # Dependencies
-
+```
 ## **🚀 Getting Started**
 
 ### **Prerequisites**
@@ -83,29 +83,29 @@ A clean architecture separates the simulation engine from the logical core.
 ### **Installation**
 
 1. **Clone the repository:**  
-   git clone [https://github.com/shlok377/AIPathFinder.git\](https://github.com/shlok377/AIPathFinder.git)  
-   cd AIPathFinder
+  ``` git clone [https://github.com/shlok377/AIPathFinder.git\](https://github.com/shlok377/AIPathFinder.git) ```
+   ```cd AIPathFinder```
 
 2. **Install dependencies:**  
-   pip install -r requirements.txt
+   ```pip install -r requirements.txt```
 
 3. **Run the simulation:**  
-   python main.py
+   ```python main.py```
 
  
 # Warehouse Layout Map  
+**X** = Shelf, **#** = Charger, **T** = Truck, **.** = Empty Aisle
 ```
-# X = Shelf, # = Charger, T = Truck, . = Empty Aisle
 .#......#....#......#.
 .T......T....T......T.
 ......................
-......................
+......................   
+..XXXX.XXX..XXX.XXXX..     
+..XXXX.XXX..XXX.XXXX..   
+......................     
+......................   
 ..XXXX.XXX..XXX.XXXX..
-..XXXX.XXX..XXX.XXXX..
-......................
-......................
-..XXXX.XXX..XXX.XXXX..
-..XXXX.XXX..XXX.XXXX..
+..XXXX.XXX..XXX.XXXX..    
 ......................
 ......................
 ..XXXX.XXX..XXX.XXXX..
@@ -133,4 +133,5 @@ A clean architecture separates the simulation engine from the logical core.
 ¹ <i\>References: Industry benchmarks suggest 5-20% downtime in autonomous fleets due to power management and navigation bottlenecks (PatentPC 2024; CaPow Energy Research 2025).</i\>  
 <a href="\#-project-name-ai-multi-agent-warehouse-optimizer"\>(back to top)</a\>  
 </p\>
+
 </small\>
