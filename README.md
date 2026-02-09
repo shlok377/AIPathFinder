@@ -58,8 +58,9 @@ Where:
 * $h(n)$: Estimated distance to target shelf.  
 * $P(b)$: Exponential penalty based on current battery charge level ($100 - b$).
 
+<div align="left"\>
 ## **📂 Project Structure**
-```
+
 A clean architecture separates the simulation engine from the logical core.  
 📂 Project Root  
 ├── 📂 core/  
@@ -72,7 +73,7 @@ A clean architecture separates the simulation engine from the logical core.
 ├── 📄 main.py                # Entry point (Simulation Loop)  
 ├── 📄 warehouse_layout.txt   # Configurable map file  
 └── 📄 requirements.txt       # Dependencies
-```
+
 ## **🚀 Getting Started**
 
 ### **Prerequisites**
@@ -99,13 +100,13 @@ A clean architecture separates the simulation engine from the logical core.
 .#......#....#......#.
 .T......T....T......T.
 ......................
-......................   
-..XXXX.XXX..XXX.XXXX..     
+......................
+..XXXX.XXX..XXX.XXXX..
 ..XXXX.XXX..XXX.XXXX..   
-......................     
+......................
 ......................   
 ..XXXX.XXX..XXX.XXXX..
-..XXXX.XXX..XXX.XXXX..    
+..XXXX.XXX..XXX.XXXX..
 ......................
 ......................
 ..XXXX.XXX..XXX.XXXX..
@@ -135,3 +136,4 @@ A clean architecture separates the simulation engine from the logical core.
 </p\>
 
 </small\>
+
