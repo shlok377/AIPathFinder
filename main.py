@@ -90,7 +90,6 @@ def main():
     CameraManager(player, top_down_camera)
 
     ts = TaskSystem(robots=robots, docks=docks)
-    FleetHUD(robots=robots, task_system=ts)
     app.run()
 
 if __name__ == "__main__":
