@@ -32,9 +32,9 @@ We moved beyond simple pathfinding. Our robots are **self-aware** agents.
 
 ## **🧠 System Architecture**
 
-### **The Logic Flow (Mermaid.js)**
+### **The Logic Flow**
 
-```mermaid
+```
 graph TD;
   A[🤖 Start: Robot Assigned Task] --> B{🔋 Battery Level > 20%?};
   B -- Yes --> C[📦 Calculate A* Path to Shelf];
