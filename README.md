@@ -34,18 +34,19 @@ We moved beyond simple pathfinding. Our robots are **self-aware** agents.
 
 ### **The Logic Flow (Mermaid.js)**
 
-This diagram illustrates the decision-making process for every agent in the simulation.  
-graph TD;   
-  A\[🤖 Start: Robot Assigned Task\] \--\> B{🔋 Battery Level \> 20%?};  
-  B \-- Yes \--\> C\[📦 Calculate A\* Path to Shelf\];  
-  B \-- No \--\> D\[⚡ Calculate Path to Charging Station\];  
-  C \--\> E\[🚀 Move to Target Node\];  
-  D \--\> F\[🔌 Charge Sequence Initiated\];  
-  E \--\> G{🚧 Obstacle Detected?};  
-  G \-- Yes \--\> H\[🔄 Recalculate Path (Local Avoidance)\];  
-  G \-- No \--\> I\[🏁 Task Complete\];  
-  F \--\> A;  
-  H \--\> E;
+```mermaid
+graph TD;
+  A[🤖 Start: Robot Assigned Task] --> B{🔋 Battery Level > 20%?};
+  B -- Yes --> C[📦 Calculate A* Path to Shelf];
+  B -- No --> D[⚡ Calculate Path to Charging Station];
+  C --> E[🚀 Move to Target Node];
+  D --> F[🔌 Charge Sequence Initiated];
+  E --> G{🚧 Obstacle Detected?};
+  G -- Yes --> H[🔄 Recalculate Path (Local Avoidance)];
+  G -- No --> I[🏁 Task Complete];
+  F --> A;
+  H --> E;
+  ```
 
 ### **The Math: Battery-Weighted A\***
 
@@ -62,15 +63,15 @@ Where:
 A clean architecture separates the simulation engine from the logical core.  
 📂 Project Root  
 ├── 📂 core/  
-│   ├── 🐍 a\_star.py          \# The Brain: Pathfinding logic  
-│   ├── 🐍 agent.py           \# The Body: Robot state machine  
-│   └── 🐍 battery.py         \# The Heart: Power management system  
+│   ├── 🐍 a_star.py          # The Brain: Pathfinding logic  
+│   ├── 🐍 agent.py           # The Body: Robot state machine  
+│   └── 🐍 battery.py         # The Heart: Power management system  
 ├── 📂 assets/  
-│   ├── 📦 shelf\_model.obj    \# 3D assets for Ursina  
-│   └── 🤖 robot\_texture.png  
-├── 📄 main.py                \# Entry point (Simulation Loop)  
-├── 📄 warehouse\_layout.txt   \# Configurable map file  
-└── 📄 requirements.txt       \# Dependencies
+│   ├── 📦 shelf_model.obj    # 3D assets for Ursina  
+│   └── 🤖 robot_texture.png  
+├── 📄 main.py                # Entry point (Simulation Loop)  
+├── 📄 warehouse_layout.txt   # Configurable map file  
+└── 📄 requirements.txt       # Dependencies
 
 ## **🚀 Getting Started**
 
@@ -82,19 +83,18 @@ A clean architecture separates the simulation engine from the logical core.
 ### **Installation**
 
 1. **Clone the repository:**  
-   git clone \[https://github.com/shlok377/AIPathFinder.git\](https://github.com/shlok377/AIPathFinder.git)  
+   git clone [https://github.com/shlok377/AIPathFinder.git\](https://github.com/shlok377/AIPathFinder.git)  
    cd AIPathFinder
 
 2. **Install dependencies:**  
-   pip install \-r requirements.txt
+   pip install -r requirements.txt
 
 3. **Run the simulation:**  
    python main.py
 
-<details\>  
-<summary\>\<b\>🔻 Click to see Example Warehouse Configuration\</b\>\</summary\>  
-You can modify \<code\>warehouse\_layout.txt\</code\> to change the simulation:  
+ 
 # Warehouse Layout Map  
+```
 # X = Shelf, # = Charger, T = Truck, . = Empty Aisle
 .#......#....#......#.
 .T......T....T......T.
@@ -120,7 +120,7 @@ You can modify \<code\>warehouse\_layout.txt\</code\> to change the simulation:
 ..XXXX.XXX..XXX.XXXX..
 ......................
 ......................
-
+```
 
 ## **👥 The Team**
 
