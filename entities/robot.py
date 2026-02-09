@@ -40,6 +40,8 @@ class Robot(Entity):
         self.braking_timer = 0
         self.waiting_timer = 0
         self.total_wait_timer = 0
+        self.current_speed = 0.0
+        self.near_miss_cooldown = 0
         self.last_pos = self.position
 
         if not self.model:
@@ -81,20 +83,21 @@ class Robot(Entity):
 
         my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
         
-        # Build avoid list: current positions of all other robots
+        # Build avoid list and collect robot positions
         avoid_grids = []
+        robot_positions = []
         for r in self.manager.robots:
+            rg = (int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2])))
+            robot_positions.append(rg)
             if r == self: continue
-            r_grid = (int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2])))
             
             # If the robot is parked or essentially stationary, it is a hard obstacle
             if r.state in ['IDLE', 'WAITING_PICKUP', 'WAITING_DROP'] or distance(r.position, r.last_pos) < 0.05:
-                avoid_grids.append(r_grid)
+                avoid_grids.append(rg)
             
             # If they are in my immediate way (within 2 steps), avoid them regardless of priority
-            my_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
-            if distance(Vec3(r_grid[0], 0, r_grid[1]), Vec3(my_grid[0], 0, my_grid[1])) <= 2:
-                avoid_grids.append(r_grid)
+            if distance(Vec3(rg[0], 0, rg[1]), Vec3(my_grid[0], 0, my_grid[1])) <= 2:
+                avoid_grids.append(rg)
 
         # ALSO avoid the immediate future paths of robots with higher priority
         for other in self.manager.robots:
@@ -109,7 +112,7 @@ class Robot(Entity):
         # Remove duplicates
         avoid_grids = list(set(avoid_grids))
         
-        new_path = self.manager.pathfinder.find_path(my_grid, goal, avoid=avoid_grids)
+        new_path = self.manager.pathfinder.find_path(my_grid, goal, avoid=avoid_grids, robot_positions=robot_positions)
         if new_path:
             cloud_logger.publish_event(self.robot_id, "REPATH", {"reason": "dynamic_obstacle", "goal": goal})
             return new_path
@@ -299,7 +302,8 @@ class Robot(Entity):
         self.battery = clamp(self.battery, 0, 100)
 
         # EMERGENCY RETURN: If battery is critically low, drop task and go to dock
-        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD and self.state not in ['IDLE', 'RETURNING']:
+        # Ignore if already IDLE, RETURNING, or in a waiting (pickup/drop) phase
+        if self.battery < AppConfig.BATTERY_CRITICAL_THRESHOLD and self.state not in ['IDLE', 'RETURNING', 'WAITING_PICKUP', 'WAITING_DROP']:
             cloud_logger.publish_event(self.robot_id, "CRITICAL_BATTERY", {"battery": round(self.battery, 1)})
             print(f"CRITICAL BATTERY on Robot {self.robot_id}! Dropping package and emergency return.")
             self.is_charging_session = True
@@ -307,7 +311,7 @@ class Robot(Entity):
                 task = self.current_task
                 if self.cargo:
                     task['pickup_pos'] = self.position
-                    if 'pickup_ent' in task:
+                    if 'pickup_ent' in task and task['pickup_ent'] and not task['pickup_ent'].is_empty():
                         # Drop cargo back at current position
                         task['pickup_ent'].position = (self.x, 0, self.z)
                         task['pickup_ent'].visible = True
@@ -321,7 +325,8 @@ class Robot(Entity):
                     self.manager.update_file_grid(self.position, task['pickup_char'])
                     self.cargo = None
                 else:
-                    if 'pickup_ent' in task: task['pickup_ent'].visible = True
+                    if 'pickup_ent' in task and task['pickup_ent'] and not task['pickup_ent'].is_empty():
+                        task['pickup_ent'].visible = True
                 
                 if task in self.manager.active_tasks: self.manager.active_tasks.remove(task)
                 self.manager.unassigned_tasks.append(task)
@@ -342,7 +347,9 @@ class Robot(Entity):
                     print(f"Robot {self.robot_id} REDIRECTING to better dock at {best_dock}")
                     self.home_pos = best_dock
                     start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
-                    self.current_path = self.manager.pathfinder.find_path(start, self.home_pos)
+                    
+                    robot_positions = [(int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2]))) for r in self.manager.robots]
+                    self.current_path = self.manager.pathfinder.find_path(start, self.home_pos, robot_positions=robot_positions)
                 else:
                     # No docks available anymore!
                     print(f"Robot {self.robot_id} lost dock reservation and none available!")
@@ -460,11 +467,22 @@ class Robot(Entity):
         for other in self.manager.robots:
             if other == self: continue
             dist = distance(self.position, other.position)
+            
+            # NEAR MISS LOGIC: Close but not quite a hard collision
+            if dist < AppConfig.HARD_COLLISION_DISTANCE * 1.5:
+                if self.near_miss_cooldown <= 0:
+                    cloud_logger.publish_event(self.robot_id, "NEAR_MISS", {"with": other.robot_id, "dist": round(dist, 2)})
+                    self.near_miss_cooldown = 3.0 # Cooldown to avoid spam
+            
             # Use an aggressive bubble to ensure they NEVER touch
             if dist < AppConfig.HARD_COLLISION_DISTANCE:
                 hard_stop = True
                 threat = other
                 break
+        
+        # Update cooldowns
+        if self.near_miss_cooldown > 0:
+            self.near_miss_cooldown -= time.dt
         
         # BRAKE-CHECK & RECOVERY LOGIC
         target_speed = AppConfig.ROBOT_MOVE_SPEED
@@ -614,12 +632,23 @@ class Robot(Entity):
         else:
             self.total_wait_timer = 0
 
+        # Acceleration/Turning Cost simulation via Speed Smoothing
+        accel_rate = 4.0 # Speed units per second per second
+        if self.current_speed < target_speed:
+            self.current_speed = min(target_speed, self.current_speed + accel_rate * time.dt)
+        else:
+            # Braking is faster
+            self.current_speed = max(target_speed, self.current_speed - accel_rate * 2.0 * time.dt)
+
         dist = distance(self.position, world_target)
         if dist > 0.1:
-            self.position += self.forward * target_speed * time.dt
+            self.position += self.forward * self.current_speed * time.dt
         else:
+            # PET Tracking: Robot has reached 'world_target', thus vacated its previous grid position
+            old_grid = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
             self.position = world_target
-            self.current_path.pop(0)
+            new_grid = self.current_path.pop(0)
+            cloud_logger.register_cell_transition(self.robot_id, old_grid, new_grid)
             
             if not self.current_path:
                 self.on_reach_target()
@@ -670,15 +699,21 @@ class Robot(Entity):
                 self.cargo = None
 
     def start_drop_off_phase(self):
+        # Collect current robot grid positions for congestion-aware pathfinding
+        robot_positions = [(int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2]))) for r in self.manager.robots]
+
         print(f"Robot {self.robot_id} moving to DROP {self.current_task['drop_char']}")
         self.state = 'TO_DROP'
         task_sys = self.manager
         start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
         goal = (int(round(self.current_task['drop_pos'][0] / AppConfig.CELL_SCALE[0])), 
                 int(round(self.current_task['drop_pos'][2] / AppConfig.CELL_SCALE[2])))
-        self.current_path = task_sys.pathfinder.find_path(start, goal)
+        self.current_path = task_sys.pathfinder.find_path(start, goal, robot_positions=robot_positions)
 
     def start_return_home_phase(self):
+        # Collect current robot grid positions for congestion-aware pathfinding
+        robot_positions = [(int(round(r.x / AppConfig.CELL_SCALE[0])), int(round(r.z / AppConfig.CELL_SCALE[2]))) for r in self.manager.robots]
+
         # Set charging session flag if battery is low
         if self.battery < AppConfig.BATTERY_LOW_THRESHOLD:
             self.is_charging_session = True
@@ -699,7 +734,7 @@ class Robot(Entity):
             print(f"Robot {self.robot_id} returning to nearest dock at {self.home_pos}")
             self.state = 'RETURNING'
             start = (int(round(self.x / AppConfig.CELL_SCALE[0])), int(round(self.z / AppConfig.CELL_SCALE[2])))
-            self.current_path = self.manager.pathfinder.find_path(start, self.home_pos)
+            self.current_path = self.manager.pathfinder.find_path(start, self.home_pos, robot_positions=robot_positions)
             self.current_task = None
         else:
             print(f"Robot {self.robot_id} - No available docks found!")
