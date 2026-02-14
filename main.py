@@ -78,6 +78,9 @@ def parse_map_and_spawn(grid):
 
 def main():
     app = Ursina()
+    window.borderless = False
+    window.fullscreen = False
+    window.size = (window.fullscreen_size.y, window.fullscreen_size.y)
     reset_layout_file(AppConfig.LAYOUT_FILE)
     grid = load_grid(AppConfig.LAYOUT_FILE)
     width, height, floor_parent, robots, docks = parse_map_and_spawn(grid)
