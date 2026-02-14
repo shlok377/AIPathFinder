@@ -1,140 +1,237 @@
-from ursina import *
+import sys
 import random
 import datetime
-
-app = Ursina()
-window.color = color.black
-window.title = "Google Cloud Robotics: Mission Control"
-
-# ==========================================
-# 🎨 THEME
-# ==========================================
-theme = {
-    'bg': color.rgba(30, 32, 38, 255),
-    'panel_bg': color.rgba(255, 255, 255, 10),
-    'accent': color.hex("#4285F4"),
-    'success': color.hex("#0F9D58"),
-    'warning': color.hex("#F4B400"),
-    'danger': color.hex("#DB4437"),
-    'text_main': color.white,
-    'text_sub': color.gray
-}
-Text.default_font = 'VeraMono.ttf'
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QLabel, QFrame, QProgressBar, 
+                             QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView)
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen
 
 # ==========================================
-# 🧱 LAYOUT: RIGHT SIDEBAR
+# 🎨 GOOGLE CLOUD THEME (PyQt Styles)
 # ==========================================
-sidebar = Entity(parent=camera.ui, model='quad', color=theme['bg'], scale=(0.7, 1), position=(0.65, 0), z=5)
-Entity(parent=sidebar, model='quad', color=theme['accent'], scale=(0.015, 1), position=(-0.505, 0))
+STYLES = """
+QMainWindow { background-color: #1e2026; }
+QLabel { color: #b0b0b0; font-family: 'Consolas', 'Courier New'; }
+QLabel#Header { color: #ffffff; font-size: 24px; font-weight: bold; }
+QLabel#SubHeader { color: #4285F4; font-size: 14px; font-weight: bold; }
+QLabel#BigValue { color: #ffffff; font-size: 36px; font-weight: bold; }
+QFrame#Panel { background-color: rgba(255, 255, 255, 10); border-radius: 8px; }
+QProgressBar { border: none; background-color: #333; height: 10px; border-radius: 5px; }
+QProgressBar::chunk { background-color: #4285F4; border-radius: 5px; }
+QTableWidget { background-color: transparent; color: white; gridline-color: #333; border: none; font-family: 'Consolas'; }
+QHeaderView::section { background-color: #2d2d2d; color: #4285F4; padding: 4px; border: none; }
+"""
 
 # ==========================================
-# 1️⃣ TOP SECTION: WORKFLOW & UTILIZATION
+# 🏗️ SIMULATION VIEW (THE GRID)
 # ==========================================
-top_section = Entity(parent=sidebar, model='quad', color=color.clear, scale=(0.9, 0.15), position=(0, 0.42))
-Text(text="WORKFLOW EFFICIENCY", parent=top_section, scale=1.2, y=0.4, x=-0.45, color=theme['text_sub'])
-val_workflow = Text(text="84%", parent=top_section, scale=4, y=-0.1, x=-0.45, color=theme['success'])
-Text(text="FLEET UTILIZATION", parent=top_section, scale=1.2, y=0.4, x=0.1, color=theme['text_sub'])
-Entity(parent=top_section, model='quad', color=color.black, scale=(0.4, 0.15), position=(0.3, 0))
-bar_util = Entity(parent=top_section, model='quad', color=theme['accent'], scale=(0.3, 0.15), position=(0.25, 0))
-Text(text="75%", parent=bar_util, scale=5, origin=(0,0), color=color.white, z=-1)
+class WarehouseGrid(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(800, 800)
+        self.grid_data = []
+        self.robots = {}  # {'A': (x, y), 'B': (x, y)...}
+        self.cell_size = 40
+        self.cols = 20
+        self.rows = 20
 
-# ==========================================
-# 2️⃣ MIDDLE SECTION: KPI GRID
-# ==========================================
-kpi_grid = Entity(parent=sidebar, model='quad', color=color.clear, scale=(0.9, 0.25), position=(0, 0.2))
-def create_mini_card(parent, title, unit, x, y, col):
-    card = Entity(parent=parent, model='quad', color=theme['panel_bg'], scale=(0.48, 0.45), position=(x, y))
-    Text(text=title, parent=card, scale=1.5, x=-0.45, y=0.35, color=theme['text_sub'])
-    val = Text(text="0", parent=card, scale=4, x=-0.4, y=-0.1, color=col)
-    Text(text=unit, parent=card, scale=1.2, x=0.45, y=-0.35, origin=(0.5,0), color=theme['text_sub'])
-    return val
-val_near_miss = create_mini_card(kpi_grid, "NEAR MISSES", "Events", -0.25, 0.25, theme['warning'])
-val_energy = create_mini_card(kpi_grid, "ENERGY USED", "kWh", 0.25, 0.25, theme['text_main'])
-val_conflicts = create_mini_card(kpi_grid, "CONFLICTS", "Hotspots", -0.25, -0.25, theme['danger'])
-val_efficiency = create_mini_card(kpi_grid, "EFFICIENCY", "kWh/Job", 0.25, -0.25, theme['success'])
+    def update_state(self):
+        """Reads the layout file and repaints"""
+        try:
+            with open('warehouse_layout.txt', 'r') as f:
+                lines = [line.strip() for line in f.readlines() if line.strip()]
+            
+            if not lines: return
+            
+            self.grid_data = lines
+            self.rows = len(lines)
+            self.cols = len(lines[0])
+            self.robots = {}
 
-# ==========================================
-# 3️⃣ HEARTBEAT SECTION: LIVE FLEET TABLE
-# ==========================================
-table_section = Entity(parent=sidebar, model='quad', color=theme['panel_bg'], scale=(0.92, 0.25), position=(0, -0.08))
-headers = ["ID", "STATE", "BATT %", "TASK", "ETA"]
-for i, h in enumerate(headers):
-    Text(text=h, parent=table_section, scale=1.5, y=0.4, x=-0.46 + (i*0.23), color=theme['accent'])
-robot_uis = {}
-for i, rid in enumerate(['A', 'B', 'C', 'D']):
-    y = 0.2 - (i * 0.22)
-    if i % 2 == 0: Entity(parent=table_section, model='quad', color=color.rgba(255,255,255,10), scale=(1, 0.2), position=(0, y))
-    Text(text=rid, parent=table_section, scale=2, y=y, x=-0.46, origin=(0,0))
-    t_state = Text(text="IDLE", parent=table_section, scale=1.3, y=y, x=-0.23, origin=(0,0))
-    Entity(parent=table_section, model='quad', color=color.black, scale=(0.15, 0.1), position=(0, y))
-    fill_bat = Entity(parent=table_section, model='quad', color=theme['success'], scale=(0.15, 0.1), position=(0, y))
-    t_task = Text(text="-", parent=table_section, scale=1.5, y=y, x=0.23, origin=(0,0))
-    t_eta = Text(text="0s", parent=table_section, scale=1.5, y=y, x=0.46, origin=(0,0))
-    robot_uis[rid] = {'state': t_state, 'bar': fill_bat, 'task': t_task, 'eta': t_eta}
+            # Parse for robots to draw them on top
+            for y, row in enumerate(lines):
+                for x, char in enumerate(row):
+                    if char.isupper() and char not in ['X', 'T']:
+                        self.robots[char] = (x, y)
+            
+            self.update() # Trigger paintEvent
+        except: pass
 
-# ==========================================
-# 4️⃣ BOTTOM SECTION: SYSTEM LOAD & ALERTS (UPDATED)
-# ==========================================
-bottom_section = Entity(parent=sidebar, model='quad', color=color.clear, scale=(0.9, 0.22), position=(0, -0.34))
-
-# --- Left Side: Graph & Latency ---
-left_sub = Entity(parent=bottom_section, model='quad', color=color.clear, scale=(0.6, 1), position=(-0.2, 0.1))
-Text(text="THROUGHPUT TREND", parent=left_sub, scale=1.2, x=-0.45, y=0.45, color=theme['text_sub'])
-graph_bg = Entity(parent=left_sub, model='quad', color=color.black, scale=(0.9, 0.4), position=(0, 0))
-graph_bars = []
-for i in range(10):
-    bar = Entity(parent=graph_bg, model='quad', color=theme['accent'], scale=(0.08, 0.1), position=(-0.45 + (i*0.1), -0.4), origin=(0,-0.5))
-    graph_bars.append(bar)
-# NEW: Latency Metrics
-Text(text="TASK LATENCY (Avg/Max)", parent=left_sub, scale=1.1, x=-0.45, y=-0.3, color=theme['text_sub'])
-val_latency = Text(text="24s / 55s", parent=left_sub, scale=2, x=-0.45, y=-0.5, color=theme['text_main'])
-
-# --- Right Side: Queue & Spawner ---
-right_sub = Entity(parent=bottom_section, model='quad', color=color.clear, scale=(0.35, 1), position=(0.3, 0.1))
-Text(text="QUEUE", parent=right_sub, scale=1.2, x=0, y=0.45, color=theme['text_sub'])
-val_queue = Text(text="12", parent=right_sub, scale=4, x=0, y=0.15, origin=(0,0), color=theme['warning'])
-# NEW: Spawner Status
-Text(text="SPAWNER", parent=right_sub, scale=1.1, x=0, y=-0.2, color=theme['text_sub'])
-val_spawner = Text(text="ACTIVE (95%)", parent=right_sub, scale=1.8, x=0, y=-0.4, origin=(0,0), color=theme['success'])
-
-# --- Alert Box at very bottom ---
-alert_box = Entity(parent=sidebar, model='quad', color=color.rgba(219,68,55,50), scale=(0.9, 0.05), position=(0, -0.47))
-Text(text="🚨 ALERT:", parent=alert_box, scale=1.2, x=-0.48, y=0, origin=(-0.5, 0), color=theme['danger'])
-val_alert = Text(text="System Nominal", parent=alert_box, scale=1.2, x=-0.25, y=0, origin=(-0.5, 0), color=theme['text_main'])
-
-# ==========================================
-# 🔄 DUMMY DATA GENERATOR
-# ==========================================
-def update():
-    if random.random() < 0.1:
-        for bar in graph_bars:
-            bar.scale_y = lerp(bar.scale_y, random.uniform(0.1, 0.9), 0.1)
-    if random.random() < 0.05:
-        val_energy.text = str(round(float(val_energy.text) + 0.15, 2))
-        # Simulate Latency changing
-        avg = random.randint(20, 30)
-        val_latency.text = f"{avg}s / {avg + random.randint(10,30)}s"
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        if random.random() < 0.1:
-            val_near_miss.text = str(int(val_near_miss.text) + 1)
-            val_alert.text = f"High Latency detected on Task {random.randint(100,999)}"
-            val_alert.color = theme['warning']
-            invoke(reset_alert, delay=2)
+        # Calculate cell size to fit window
+        w_scale = self.width() / max(1, self.cols)
+        h_scale = self.height() / max(1, self.rows)
+        sz = min(w_scale, h_scale) * 0.95
+        
+        # Draw Grid
+        for y in range(self.rows):
+            for x in range(self.cols):
+                char = self.grid_data[y][x]
+                
+                # Base Floor
+                painter.fillRect(int(x*sz), int(y*sz), int(sz), int(sz), QColor("#2d2d2d"))
+                painter.setPen(QPen(QColor("#3d3d3d"), 1))
+                painter.drawRect(int(x*sz), int(y*sz), int(sz), int(sz))
+                
+                # Draw Objects
+                if char == 'X': # Shelf
+                    painter.fillRect(int(x*sz+2), int(y*sz+2), int(sz-4), int(sz-4), QColor("#ffffff"))
+                elif char == '#': # Charger
+                    painter.fillRect(int(x*sz+5), int(y*sz+5), int(sz-10), int(sz-10), QColor("#0F9D58"))
+                elif char == '$': # Pickup
+                    painter.setBrush(QColor("#F4B400"))
+                    painter.drawEllipse(int(x*sz+10), int(y*sz+10), int(sz-20), int(sz-20))
+                elif char == '@': # Drop
+                    painter.fillRect(int(x*sz+5), int(y*sz+5), int(sz-10), int(sz-10), QColor("#4285F4"))
 
-    for rid, ui in robot_uis.items():
-        new_bat = (ui['bar'].scale_x / 0.15) - 0.001
-        if new_bat < 0: new_bat = 1.0
-        ui['bar'].scale_x = new_bat * 0.15
-        if new_bat < 0.2: ui['bar'].color = theme['danger']
-        elif new_bat < 0.5: ui['bar'].color = theme['warning']
-        else: ui['bar'].color = theme['success']
-        if random.random() < 0.02:
-            ui['state'].text = random.choice(["PICKUP", "DELIVER", "CHARGE", "IDLE"])
-            ui['task'].text = random.choice(['a', 'b', '-', '-'])
-            ui['eta'].text = f"{random.randint(5, 120)}s"
+        # Draw Robots (On Top)
+        for rid, (rx, ry) in self.robots.items():
+            painter.setBrush(QColor("#FF6D00")) # Orange
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(int(rx*sz+4), int(ry*sz+4), int(sz-8), int(sz-8), 5, 5)
+            
+            # Robot Label
+            painter.setPen(QColor("black"))
+            painter.setFont(QFont("Arial", int(sz/2.5), QFont.Weight.Bold))
+            painter.drawText(int(rx*sz), int(ry*sz), int(sz), int(sz), Qt.AlignmentFlag.AlignCenter, rid)
 
-def reset_alert():
-    val_alert.text = "System Nominal"
-    val_alert.color = theme['text_main']
+# ==========================================
+# 📊 DASHBOARD WIDGETS
+# ==========================================
+class KpiCard(QFrame):
+    def __init__(self, title, value, unit, color_hex):
+        super().__init__()
+        self.setObjectName("Panel")
+        layout = QVBoxLayout()
+        
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet("color: #888; font-size: 12px;")
+        
+        self.lbl_val = QLabel(value)
+        self.lbl_val.setStyleSheet(f"color: {color_hex}; font-size: 28px; font-weight: bold;")
+        
+        lbl_unit = QLabel(unit)
+        lbl_unit.setStyleSheet("color: #666; font-size: 10px;")
+        
+        layout.addWidget(lbl_title)
+        layout.addWidget(self.lbl_val)
+        layout.addWidget(lbl_unit)
+        self.setLayout(layout)
 
-app.run()
+class MissionControl(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AIPathfinder: PyQt6 Mission Control")
+        self.resize(1280, 720)
+        self.setStyleSheet(STYLES)
+
+        # Main Layout: Split Screen (Sim Left | Dashboard Right)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 1. LEFT SIDE: 2D Grid
+        self.grid_view = WarehouseGrid()
+        main_layout.addWidget(self.grid_view, stretch=65)
+
+        # 2. RIGHT SIDE: Dashboard Sidebar
+        sidebar = QFrame()
+        sidebar.setStyleSheet("background-color: #1e2026; border-left: 2px solid #4285F4;")
+        side_layout = QVBoxLayout(sidebar)
+        side_layout.setContentsMargins(20, 30, 20, 20)
+        side_layout.setSpacing(20)
+        
+        # --- HEADER ---
+        header_layout = QVBoxLayout()
+        title = QLabel("GOOGLE CLOUD OPS")
+        title.setObjectName("Header")
+        self.time_lbl = QLabel("00:00:00")
+        self.time_lbl.setStyleSheet("color: #4285F4; font-size: 16px;")
+        header_layout.addWidget(title)
+        header_layout.addWidget(self.time_lbl)
+        side_layout.addLayout(header_layout)
+
+        # --- KPI GRID (2x2) ---
+        kpi_grid = QGridLayout()
+        self.card_workflow = KpiCard("WORKFLOW EFFICIENCY", "84%", "Global Score", "#0F9D58")
+        self.card_energy = KpiCard("ENERGY USED", "142.5", "kWh Total", "#FFFFFF")
+        self.card_conflicts = KpiCard("CONFLICTS", "3", "Hotspots", "#DB4437")
+        self.card_util = KpiCard("FLEET UTILIZATION", "75%", "Active Time", "#F4B400")
+        
+        kpi_grid.addWidget(self.card_workflow, 0, 0)
+        kpi_grid.addWidget(self.card_energy, 0, 1)
+        kpi_grid.addWidget(self.card_conflicts, 1, 0)
+        kpi_grid.addWidget(self.card_util, 1, 1)
+        side_layout.addLayout(kpi_grid)
+
+        # --- FLEET TABLE ---
+        lbl_fleet = QLabel("LIVE FLEET HEARTBEAT")
+        lbl_fleet.setObjectName("SubHeader")
+        side_layout.addWidget(lbl_fleet)
+
+        self.table = QTableWidget(4, 3)
+        self.table.setHorizontalHeaderLabels(["ID", "STATE", "BATT %"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        side_layout.addWidget(self.table)
+
+        # Fill table placeholders
+        for i, rid in enumerate(['A', 'B', 'C', 'D']):
+            self.table.setItem(i, 0, QTableWidgetItem(rid))
+            self.table.setItem(i, 1, QTableWidgetItem("IDLE"))
+            self.table.setItem(i, 2, QTableWidgetItem("100%"))
+
+        # --- BOTTOM ALERTS ---
+        self.alert_box = QFrame()
+        self.alert_box.setObjectName("Panel")
+        self.alert_box.setStyleSheet("background-color: rgba(219, 68, 55, 0.2); border: 1px solid #DB4437;")
+        alert_layout = QHBoxLayout(self.alert_box)
+        
+        lbl_alert_icon = QLabel("🚨 ALERT:")
+        lbl_alert_icon.setStyleSheet("color: #DB4437; font-weight: bold;")
+        self.lbl_alert_msg = QLabel("System Nominal")
+        self.lbl_alert_msg.setStyleSheet("color: white;")
+        
+        alert_layout.addWidget(lbl_alert_icon)
+        alert_layout.addWidget(self.lbl_alert_msg)
+        alert_layout.addStretch()
+        side_layout.addWidget(self.alert_box)
+
+        side_layout.addStretch() # Push everything up
+        main_layout.addWidget(sidebar, stretch=35)
+
+        # --- TIMER LOOP ---
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_loop)
+        self.timer.start(100) # Update every 100ms (10 FPS)
+
+    def update_loop(self):
+        # 1. Update Clock
+        self.time_lbl.setText(datetime.datetime.now().strftime("%H:%M:%S"))
+        
+        # 2. Update Grid Visualization
+        self.grid_view.update_state()
+
+        # 3. Simulate Data Updates (Connect your Real Data Here)
+        if random.random() < 0.05:
+            # Jitter Energy
+            curr = float(self.card_energy.lbl_val.text())
+            self.card_energy.lbl_val.setText(f"{curr + 0.1:.1f}")
+
+            # Jitter Rows
+            r = random.randint(0, 3)
+            self.table.setItem(r, 1, QTableWidgetItem(random.choice(["MOVE", "PICK", "DROP"])))
+            self.table.setItem(r, 2, QTableWidgetItem(f"{random.randint(20, 99)}%"))
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MissionControl()
+    window.show()
+    sys.exit(app.exec())
