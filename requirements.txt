@@ -1,3 +1,4 @@
 ursina
 numpy
+PyQt6 
 math
