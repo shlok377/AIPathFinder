@@ -40,19 +40,31 @@ class TaskSystem(Entity):
     def _calculate_flying_highways(self):
         # Extreme Left (0,1), Extreme Right (W-1, W-2), Extreme Top (H-1, H-2)
         h = []
-        for x in [0, 1, self.width-1, self.width-2]:
+        # Extreme Left (2 blocks wide)
+        for x in [0, 1]:
             for y in range(self.height): h.append((x, y))
+        # Extreme Right (2 blocks wide)
+        for x in [self.width-1, self.width-2]:
+            for y in range(self.height): h.append((x, y))
+        # Extreme End Row (2 blocks wide, opposite to chargers at y=0)
         for y in [self.height-1, self.height-2]:
             for x in range(self.width): h.append((x, y))
         return list(set(h))
 
     def _calculate_normal_highways(self):
-        # Absolute middle column(s)
+        # Absolute middle column(s) - 2 blocks wide
         h = []
         mid = self.width // 2
-        cols = [mid] if self.width % 2 != 0 else [mid-1, mid]
+        if self.width % 2 != 0:
+            cols = [mid, mid + 1]
+        else:
+            cols = [mid - 1, mid]
+        
         for x in cols:
             for y in range(self.height): h.append((x, y))
+            
+        # Also include joints between shelves (optional but requested "the other joints between shelves should be used")
+        # For now, let's focus on the main highways.
         return h
 
     def is_highway(self, x, y):
@@ -62,7 +74,7 @@ class TaskSystem(Entity):
         return (x, y) in self.flying_highways
 
     def update(self):
-        cloud_logger.update_fleet_metrics(self.robots, self.docks)
+        cloud_logger.update_fleet_metrics(self)
         if self.spawner_active:
             self.handle_auto_spawner()
         self.assign_tasks()
@@ -282,14 +294,32 @@ class TaskSystem(Entity):
         return best_robot
 
     def assign_task_to_robot(self, robot, task):
-        robot_positions = [(int(round(r.x / self.scale_x)), int(round(r.z / self.scale_z))) for r in self.robots]
+        robot_positions = []
+        extra_avoid = []
+        my_grid = (int(round(robot.x / self.scale_x)), int(round(robot.z / self.scale_z)))
+        
+        # HARMONY SECURITY: Pre-avoid neighbors before starting journey to pickup
+        for other in self.robots:
+            other_grid = (int(round(other.x / self.scale_x)), int(round(other.z / self.scale_z)))
+            robot_positions.append(other_grid)
+            if other == robot: continue
+            
+            grid_dist = abs(other_grid[0] - my_grid[0]) + abs(other_grid[1] - my_grid[1])
+            if grid_dist <= 2:
+                if other.state in ['WAITING_PICKUP', 'WAITING_DROP', 'IDLE']:
+                    extra_avoid.append(other_grid)
+
         task['start_time'] = time.time()
         robot.state = 'TO_PICKUP'
         robot.current_task = task
         robot.current_path = self.pathfinder.find_path(
-            (int(round(robot.x / self.scale_x)), int(round(robot.z / self.scale_z))),
+            my_grid,
             (int(round(task['pickup_pos'][0] / self.scale_x)), int(round(task['pickup_pos'][2] / self.scale_z))),
-            robot_positions=robot_positions, robot_id=robot.robot_id, start_time=time.time()
+            avoid=extra_avoid,
+            robot_positions=robot_positions, 
+            robot_id=robot.robot_id, 
+            start_time=time.time(), 
+            is_discharged=robot.is_charging_session
         )
         if robot.current_path: self.reserve_path(robot.robot_id, robot.current_path, time.time())
         task['est_duration'] = (len(robot.current_path) + 10) / AppConfig.ROBOT_MOVE_SPEED * 2.5

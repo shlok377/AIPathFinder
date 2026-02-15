@@ -22,7 +22,7 @@ class AppConfig:
     
     # Floor Settings
     FLOOR_Y_POS = -1
-    FLOOR_COLOR_A = color.white
+    FLOOR_COLOR_A = color.gray
     
     # Map Characters
     OBSTACLE_CHAR = 'X'
@@ -39,20 +39,22 @@ class AppConfig:
     # Robot Settings
     ROBOT_SCALE = (0.7, 0.7, 0.7) 
     ROBOT_COLOR = color.white 
-    ROBOT_MOVE_SPEED = 5
+    ROBOT_MOVE_SPEED = 5.0
     ROBOT_ROTATION_SPEED = 10
     ROBOT_WAIT_TIME = 1.75
 
-    # Highway Physics & Economy (New)
-    HIGHWAY_SPEED = 7.0          # 2 higher than normal
-    HIGHWAY_DRAIN_MOVE = 2.0     # 1 higher than normal drain
+    # Highway Physics & Economy
+    HIGHWAY_SPEED = 7.0          # 2 higher than normal (5+2)
+    MIDDLE_CORRIDOR_SPEED = 6.0  # Medium speed
+    HIGHWAY_DRAIN_MOVE = 2.0     # 1 higher than normal drain (1+1)
     
     # Highway Geography
     # Extreme columns (0,1 and width-2, width-1) and extreme end row (height-1, height-2)
     # Middle columns (dependent on width)
-    FLYING_HIGHWAY_X = [0, 1]    # Will be extended in simulation based on width
-    FLYING_HIGHWAY_Z = []        # Will be calculated based on height
-    MID_HIGHWAY_X = []           # Will be calculated based on width
+    # Absolute middle(if the no of rows are odd) on middle two columns(if the no of rows are even)
+    # These highways will be 2 blocks wide, one lane for going up and one lane for going down.
+    
+    HIGHWAY_MISUSE_PENALTY = 50.0 # Cost added to side highways for short, non-charging trips
 
     # Charging Dock Settings
     DOCK_COLOR = color.white

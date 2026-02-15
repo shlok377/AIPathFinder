@@ -85,7 +85,9 @@ class GoogleCloudTelemetry:
                     if pet < 0.5:
                         self.publish_event(robot_id, "PET_NEAR_MISS", {"pet": round(pet, 3), "cell": new_grid})
 
-    def update_fleet_metrics(self, robots, docks):
+    def update_fleet_metrics(self, task_system):
+        robots = task_system.robots
+        docks = task_system.docks
         elapsed = time.time() - self.start_last_update if hasattr(self, 'start_last_update') else 0.01
         self.start_last_update = time.time()
 
@@ -100,11 +102,11 @@ class GoogleCloudTelemetry:
             if r.state != 'IDLE':
                 self.robot_active_time[r.robot_id] = self.robot_active_time.get(r.robot_id, 0) + elapsed
 
-        if time.time() - self.last_sync >= 5.0 if hasattr(self, 'last_sync') else True:
-            self._sync_to_cloud(robots, docks)
+        if time.time() - self.last_sync >= 1.0: # Sync every second for live UI
+            self._sync_to_cloud(task_system)
             self.last_sync = time.time()
 
-    def _calculate_advanced_metrics(self):
+    def _calculate_advanced_metrics(self, task_system=None):
         uptime = time.time() - self.start_time
         
         # 1. Latency
@@ -139,12 +141,69 @@ class GoogleCloudTelemetry:
             "workflow_eff": round(workflow_eff, 1),
             "avg_pet": round(avg_pet, 2),
             "min_pet": round(min_pet, 2),
-            "pet_violations": self.total_pet_violations
+            "pet_violations": self.total_pet_violations,
+            "deliveries": self.total_deliveries,
+            "conflicts": self.total_conflicts,
+            "near_misses": self.total_near_misses,
+            "anomalies": self.total_anomalies
         }
 
-    def _sync_to_cloud(self, robots, docks):
-        m = self._calculate_advanced_metrics()
+    def _sync_to_cloud(self, task_system):
+        m = self._calculate_advanced_metrics(task_system)
         
+        # Prepare data for PyQt6 UI
+        dashboard_data = {
+            "metrics": m,
+            "system": {
+                "queue_load": len(task_system.unassigned_tasks),
+                "throughput": round(self.total_deliveries / (m["uptime"]/60 + 0.01), 1),
+                "spawner_active": task_system.spawner_active,
+                "bottlenecks": self.total_anomalies
+            },
+            "robots": [],
+            "docks": []
+        }
+
+        # Robot data
+        for r in task_system.robots:
+            task_id = r.current_task['pickup_char'] if r.current_task else "-"
+            state_str = r.state.replace("_", " ").capitalize()
+            if r.is_charging_session: state_str = "Charging"
+            eta = int(time.time() - r.current_task['start_time']) if r.current_task else 0
+            
+            dashboard_data["robots"].append({
+                "id": r.robot_id,
+                "state": state_str,
+                "battery": int(r.battery),
+                "task": task_id,
+                "eta": eta
+            })
+
+        # Dock data
+        for d in task_system.docks:
+            status = "IDLE"
+            # Check if any robot is at this dock
+            for r in task_system.robots:
+                # Home position is the dock parking spot
+                if r.home_pos == (int(round(d.x / task_system.scale_x)), AppConfig.PARKING_LANE_Z):
+                    if r.is_charging_session:
+                        status = "CHARGING"
+                    elif r.state == 'RETURNING':
+                        status = "ARRIVING"
+                    elif r.state == 'IDLE':
+                        status = "OCCUPIED"
+            
+            dashboard_data["docks"].append({
+                "id": d.dock_id,
+                "status": status
+            })
+
+        # Atomic write to avoid UI reading partial file
+        temp_file = self.pretty_log + ".tmp"
+        with open(temp_file, 'w') as f:
+            json.dump(dashboard_data, f)
+        os.replace(temp_file, self.pretty_log)
+
         # ═ CONSOLE DASHBOARD ═
         print("\n" + "═"*75)
         print(f" ☁️  \033[94mGOOGLE CLOUD MONITOR\033[0m | Uptime: {m['uptime']}s | Utilization: {m['utilization']}%")
@@ -153,16 +212,6 @@ class GoogleCloudTelemetry:
         print(f"  LATENCY (AVG/MAX): {m['avg_latency']}s / {m['max_latency']}s")
         print(f"  SAFETY: Near-Misses: {self.total_near_misses} | Conflicts: {self.total_conflicts} | Anomalies: {self.total_anomalies}")
         print(f"  PET (AVG/MIN): {m['avg_pet']}s / {m['min_pet']}s | PET Violations: {m['pet_violations']}")
-        
-        print("\n  \033[1mTRUCK STATUS\033[0m")
-        print("  ID  | STATE          | BATT | TASK | LATENCY_EST")
-        print("  ----|----------------|------|------|------------")
-        for r in robots:
-            task_id = r.current_task['pickup_char'] if r.current_task else "-"
-            state_str = r.state.replace("_", " ").capitalize()
-            if r.is_charging_session: state_str = "Charging"
-            est = f"{int(time.time() - r.current_task['start_time'])}s" if r.current_task else "-"
-            print(f"  {str(r.robot_id).ljust(3)} | {state_str.ljust(14)} | {str(int(r.battery)).rjust(3)}% | {task_id.ljust(4)} | {est}")
         print("═"*75 + "\n")
 
     def generate_final_report(self):
