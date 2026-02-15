@@ -1,5 +1,6 @@
 import sys
-import random
+import os
+import json
 import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QFrame, QProgressBar, 
@@ -40,10 +41,6 @@ QLabel#DockID { color: #fff; font-weight: bold; font-size: 11px; }
 QLabel#DockStatus { font-size: 10px; font-weight: 600; }
 """
 
-# ==========================================
-# 🧩 CUSTOM WIDGETS
-# ==========================================
-
 class KpiCard(QFrame):
     def __init__(self, title, value, unit, color="#fff"):
         super().__init__()
@@ -66,8 +63,10 @@ class KpiCard(QFrame):
         l.addWidget(u)
         self.setLayout(l)
         
-    def set_value(self, val):
+    def set_value(self, val, color=None):
         self.v.setText(str(val))
+        if color:
+            self.v.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: bold;")
 
 class SystemRow(QWidget):
     def __init__(self, label, value, color="#fff"):
@@ -167,15 +166,15 @@ class RobotCard(QFrame):
         self.lst.setText(state.upper())
         self.bar.setValue(int(batt))
         
-        col = "#0F9D58"
-        if state.upper() == "CHARGING": col = "#4285F4"
-        elif batt < 20: col = "#DB4437"
-        elif batt < 50: col = "#F4B400"
+        col = "#0F9D58" # Green
+        if state.upper() == "CHARGING": col = "#4285F4" # Blue
+        elif batt < 20: col = "#DB4437" # Red
+        elif batt < 50: col = "#F4B400" # Yellow
         
         self.bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {col}; }}")
         self.setStyleSheet(f"#RobotCard {{ border-left: 4px solid {col}; background-color: rgba(30, 32, 40, 200); border-radius: 8px; }}")
         self.ltask.setText(f"TASK: {task}")
-        self.leta.setText(f"ETA: {eta}s")
+        self.leta.setText(f"ETA: {eta}s" if eta > 0 else "ETA: -")
 
 class DockCard(QFrame):
     def __init__(self, dock_id):
@@ -207,19 +206,20 @@ class DockCard(QFrame):
         elif status.upper() == "ARRIVING":
             self.setStyleSheet("#DockCard { border: 1px solid #F4B400; background-color: rgba(244, 180, 0, 0.1); }")
             self.lstatus.setStyleSheet("color: #F4B400;")
+        elif status.upper() == "OCCUPIED":
+            self.setStyleSheet("#DockCard { border: 1px solid #0F9D58; background-color: rgba(15, 157, 88, 0.1); }")
+            self.lstatus.setStyleSheet("color: #0F9D58;")
         else:
             self.setStyleSheet("#DockCard { border: 1px solid #333; background-color: rgba(255, 255, 255, 5); }")
             self.lstatus.setStyleSheet("color: #888;")
 
-# ==========================================
-# 🚀 MAIN WINDOW
-# ==========================================
 class MissionControl(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Warehouse Analytics")
         self.resize(1000, 900)
         self.setStyleSheet(STYLES)
+        self.telemetry_path = "cloud_logs/cloud_dashboard.json"
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -258,10 +258,10 @@ class MissionControl(QMainWindow):
 
         sys_l.addWidget(QLabel("SYSTEM HEALTH", objectName="KpiTitle"))
         
-        self.row_queue = SystemRow("Queue Load", "12 Tasks", "#F4B400")
-        self.row_th = SystemRow("Throughput", "45/min", "#4285F4")
-        self.row_spawn = SystemRow("Spawner", "Active (95%)", "#0F9D58")
-        self.row_lat = SystemRow("Latency (Avg/Max)", "24s / 55s", "#ccc")
+        self.row_queue = SystemRow("Queue Load", "0 Tasks", "#F4B400")
+        self.row_th = SystemRow("Throughput", "0/min", "#4285F4")
+        self.row_spawn = SystemRow("Spawner", "Inactive", "#888")
+        self.row_lat = SystemRow("Latency (Avg/Max)", "0s / 0s", "#ccc")
         self.row_bottle = SystemRow("Bottlenecks", "None", "#0F9D58")
 
         sys_l.addWidget(self.row_queue)
@@ -291,71 +291,93 @@ class MissionControl(QMainWindow):
         kpi_row.addWidget(self.k_eff)
         main_l.addLayout(kpi_row)
 
-        # 4. FLEET GRID (2x2)
+        # 4. FLEET GRID
         main_l.addWidget(QLabel("REAL-TIME FLEET", objectName="SubHeader"))
-        fleet_grid = QGridLayout()
-        fleet_grid.setSpacing(10)
+        self.fleet_grid = QGridLayout()
+        self.fleet_grid.setSpacing(10)
+        self.robot_widgets = {}
+        main_l.addLayout(self.fleet_grid)
         
-        self.robots = {}
-        ids = ['A', 'B', 'C', 'D']
-        for i, rid in enumerate(ids):
-            card = RobotCard(rid)
-            self.robots[rid] = card
-            fleet_grid.addWidget(card, i//2, i%2)
-            
-        main_l.addLayout(fleet_grid)
-        
-        # 5. DOCKING STATUS (New 2x2 Grid)
+        # 5. DOCKING STATUS
         main_l.addWidget(QLabel("DOCKING STATION STATUS", objectName="SubHeader"))
-        dock_grid = QGridLayout()
-        dock_grid.setSpacing(10)
+        self.dock_grid = QGridLayout()
+        self.dock_grid.setSpacing(10)
+        self.dock_widgets = {}
+        main_l.addLayout(self.dock_grid)
         
-        self.docks = []
-        for i in range(4): # 0 to 3
-            d = DockCard(i+1) # ID 1-4
-            self.docks.append(d)
-            dock_grid.addWidget(d, i//2, i%2) # 0,0 | 0,1 | 1,0 | 1,1
-            
-        main_l.addLayout(dock_grid)
         main_l.addStretch() 
 
         # Timer
         self.timer = QTimer()
         self.timer.timeout.connect(self.tick)
-        self.timer.start(100)
+        self.timer.start(500) # Update every 500ms
 
     def tick(self):
         self.time.setText(datetime.datetime.now().strftime("%H:%M:%S"))
         
-        if random.random() < 0.05:
-            # Gauges
-            self.g_work.set_value(random.randint(80, 99))
-            self.g_util.set_value(random.randint(50, 90))
+        if not os.path.exists(self.telemetry_path):
+            return
             
-            # System Rows
-            self.row_queue.set_value(f"{random.randint(5, 20)} Tasks")
-            self.row_th.set_value(f"{random.randint(40, 60)}/min")
+        try:
+            with open(self.telemetry_path, 'r') as f:
+                data = json.load(f)
+                
+            m = data.get("metrics", {})
+            s = data.get("system", {})
             
-            b_count = 0
-            if random.random() < 0.1: b_count = random.randint(1, 3)
+            # Update Gauges
+            self.g_work.set_value(m.get("workflow_eff", 0))
+            self.g_util.set_value(m.get("utilization", 0))
+            
+            # Update System Rows
+            self.row_queue.set_value(f"{s.get('queue_load', 0)} Tasks")
+            self.row_th.set_value(f"{s.get('throughput', 0)}/min")
+            
+            spawner = "Active" if s.get("spawner_active") else "Inactive"
+            spawner_col = "#0F9D58" if s.get("spawner_active") else "#888"
+            self.row_spawn.set_value(spawner, spawner_col)
+            
+            self.row_lat.set_value(f"{m.get('avg_latency', 0)}s / {m.get('max_latency', 0)}s")
+            
+            b_count = s.get("bottlenecks", 0)
             col = "#DB4437" if b_count > 0 else "#0F9D58"
             txt = f"{b_count} Alerts" if b_count > 0 else "None"
             self.row_bottle.set_value(txt, col)
 
-            # KPIs
-            en = float(self.k_nrg.v.text()) + 0.05
-            self.k_nrg.set_value(f"{en:.2f}")
+            # Update KPIs
+            self.k_near.set_value(m.get("near_misses", 0), "#F4B400" if m.get("near_misses", 0) > 0 else "#fff")
+            self.k_conf.set_value(m.get("conflicts", 0), "#DB4437" if m.get("conflicts", 0) > 0 else "#fff")
+            self.k_nrg.set_value(f"{m.get('kwh_consumed', 0):.2f}")
+            self.k_eff.set_value(f"{m.get('kwh_eff', 0):.3f}")
             
-            # Robots
-            rid = random.choice(['A', 'B', 'C', 'D'])
-            st = random.choice(["MOVING", "PICKUP", "CHARGING", "IDLE"])
-            bat = random.randint(10, 100)
-            if st == "CHARGING": bat = random.randint(20, 80)
-            self.robots[rid].update_data(st, bat, random.choice(['T-202', 'A-105', '-']), random.randint(10, 90))
-            
-            # Docks
-            d = random.choice(self.docks)
-            d.update_status(random.choice(["IDLE", "IDLE", "ARRIVING", "CHARGING"]))
+            # Update Robots
+            robots_data = data.get("robots", [])
+            for r in robots_data:
+                rid = r["id"]
+                if rid not in self.robot_widgets:
+                    card = RobotCard(rid)
+                    self.robot_widgets[rid] = card
+                    idx = len(self.robot_widgets) - 1
+                    self.fleet_grid.addWidget(card, idx // 2, idx % 2)
+                
+                self.robot_widgets[rid].update_data(
+                    r["state"], r["battery"], r["task"], r["eta"]
+                )
+                
+            # Update Docks
+            docks_data = data.get("docks", [])
+            for d in docks_data:
+                did = d["id"]
+                if did not in self.dock_widgets:
+                    card = DockCard(did)
+                    self.dock_widgets[did] = card
+                    idx = len(self.dock_widgets) - 1
+                    self.dock_grid.addWidget(card, idx // 2, idx % 2)
+                
+                self.dock_widgets[did].update_status(d["status"])
+                
+        except Exception as e:
+            print(f"Error reading telemetry: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

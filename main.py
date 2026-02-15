@@ -78,13 +78,12 @@ def parse_map_and_spawn(grid):
 
 def main():
     app = Ursina()
-    
-    # 1. Setup Environment
+    window.borderless = False
+    window.fullscreen = False
+    window.size = (window.fullscreen_size.y, window.fullscreen_size.y)
     reset_layout_file(AppConfig.LAYOUT_FILE)
     grid = load_grid(AppConfig.LAYOUT_FILE)
     width, height, floor_parent, robots, docks = parse_map_and_spawn(grid)
-    
-    # 2. Setup Player & Camera
     center_x, center_z = (width / 2) * AppConfig.CELL_SCALE[0], (height / 2) * AppConfig.CELL_SCALE[2]
     player = FirstPersonController()
     player.position = (center_x, AppConfig.PLAYER_START_HEIGHT, center_z + AppConfig.PLAYER_START_OFFSET_Z)
@@ -93,13 +92,8 @@ def main():
     top_down_camera = TopDownCamera(position=(center_x, AppConfig.TOP_DOWN_HEIGHT, center_z), enabled=False)
     CameraManager(player, top_down_camera)
 
-    # 3. Setup Logic (Brain)
     ts = TaskSystem(robots=robots, docks=docks)
-
-    # ---------------------------------------------------------
-    # 4. START THE UI (Add this line!)
-    # We pass 'ts' (TaskSystem) so the UI can show the queue count
-    # ---------------------------------------------------------
-    FleetHUD(robots=robots, task_system=ts) 
-
     app.run()
+
+if __name__ == "__main__":
+    main()
