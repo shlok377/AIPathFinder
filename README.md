@@ -156,6 +156,7 @@ Where:
 
 3. **Run the simulation:**  
    ```python main.py```
+   ```python mainUI.py```
 
 
 
@@ -205,6 +206,7 @@ Where:
     <img src="https://github.com/shlok377/AIPathFinder/blob/master/img/ratings.png?raw=true" alt=""/>
 </p>
 <p align="center">(<a href="#readme-top">back to top</a>)</p>
+
 
 
 
