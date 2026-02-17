@@ -1,14 +1,1 @@
-{
-    "metadata": {
-        "sync_time": "20:13:34",
-        "elapsed_time": "495s",
-        "workflow_formula": "(Deliveries * 10) / (Minutes + Conflicts + 1)",
-        "battery_formula": "(Deliveries * 100) / (Total % Drained)"
-    },
-    "kpis": {
-        "workflow_efficiency": "24.1%",
-        "battery_efficiency": "5.82 pts",
-        "deliveries": 76,
-        "fleet_battery": "55%"
-    }
-}
+{"metrics": {"uptime": 36, "avg_latency": 0, "max_latency": 0, "utilization": 0.0, "kwh_consumed": 0.0, "kwh_eff": 0, "workflow_eff": 0.0, "avg_pet": 0, "min_pet": 0, "pet_violations": 0, "deliveries": 0, "conflicts": 0, "near_misses": 0, "anomalies": 0}, "system": {"queue_load": 0, "throughput": 0.0, "spawner_active": false, "bottlenecks": 0}, "robots": [{"id": 0, "state": "Idle", "battery": 100, "task": "-", "eta": 0}, {"id": 1, "state": "Idle", "battery": 100, "task": "-", "eta": 0}, {"id": 2, "state": "Idle", "battery": 100, "task": "-", "eta": 0}, {"id": 3, "state": "Idle", "battery": 100, "task": "-", "eta": 0}], "docks": [{"id": 0, "status": "OCCUPIED"}, {"id": 1, "status": "OCCUPIED"}, {"id": 2, "status": "OCCUPIED"}, {"id": 3, "status": "OCCUPIED"}]}

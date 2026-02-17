@@ -1,0 +1,9 @@
+Key					Action
+C					Toggle Cinematic Mode (ON / OFF)
+N					Toggle Smooth Panning (Cinematic Smoothing)
+V					Toggle Black Bars (Cinematic Aspect Ratio)
+"W, A, S, D"		Move camera (XZ Plane only)
+Space				Fly Up
+Shift				Fly Down
+Scroll Up / ↑		Increase Speed & Sensitivity (+10%)
+Scroll Down / ↓		Decrease Speed & Sensitivity (-10%)
