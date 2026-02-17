@@ -1,11 +1,13 @@
+<a name="readme-top"></a>
+
 <div align="center"\>
 
-# **(Project Name): AI Multi-Agent Warehouse Optimizer**
+# **Astra: AI Multi-Agent Warehouse Optimizer**
 
 ### **National Level Hackathon Submission | Google Collaboration**
 
 **A high-fidelity 3D Digital Twin for autonomous robot logistics and battery management.**  
-[View Demo](https://www.google.com/search?q=%23-simulation-preview) • [System Architecture](https://www.google.com/search?q=%23-system-architecture) • [Installation](https://www.google.com/search?q=%23-getting-started)  
+[View Demo](#-simulation-preview) • [System Architecture](#logic-flow) • [Installation](#installation-steps)  
 
 
 ## **📌 The Problem**
@@ -32,20 +34,73 @@ We moved beyond simple pathfinding. Our robots are **self-aware** agents.
 
 ## **🧠 System Architecture**
 
-### **The Logic Flow**
+### <a name="logic-flow"></a> **The Logic Flow**
 
 ```mermaid
-graph TD;
-  A["Start: Robot Assigned Task"] --> B{"Battery Level > 20%?"};
-  B -- Yes --> C["Calculate A* Path to Shelf"];
-  B -- No --> D["Calculate Path to Charging Station"];
-  C --> E["Move to Target Node"];
-  D --> F["Charge Sequence Initiated"];
-  E --> G{"Obstacle Detected?"};
-  G -- Yes --> H["Recalculate Path (Local Avoidance)"];
-  G -- No --> I["Task Complete"];
-  F --> A;
-  H --> E;
+flowchart TD
+    %% --- Custom Style Definitions to match the image ---
+    %% Blue: Process nodes and Start
+    classDef blueFill fill:#203864,stroke:#4472c4,stroke-width:2px,color:white;
+    %% Green: Decision diamonds and Positive outcomes (Discount)
+    classDef greenFill fill:#1e452a,stroke:#548235,stroke-width:2px,color:white;
+    %% Red: Negative outcomes, Penalties, and End states
+    classDef redFill fill:#631d1d,stroke:#c00000,stroke-width:2px,color:white;
+
+    %% --- Main Pathfinding Loop ---
+    Start([Start Pathfinding<br>Robot at Current Position, Target]):::blueFill --> Init[Initialize Open Set with Start Node<br>x, y, wait_count=0, cost=0]:::blueFill
+    Init --> IsEmpty{Is Open Set Empty?}:::greenFill
+    
+    IsEmpty -- Yes --> Fail([Path Not Found Failure]):::redFill
+    IsEmpty -- No --> Select[Select Node with Lowest F-Cost<br>Current Node]:::blueFill
+    
+    Select --> IsTarget{Is Current Node == Target?}:::greenFill
+    IsTarget -- Yes --> Success([Path Found Success, Traceback Path]):::redFill
+    IsTarget -- No --> Expand[Expand Neighbors & Evaluate]:::blueFill
+
+    %% --- Neighbor Evaluation Subgraph ---
+    subgraph NeighborEval [Neighbor Evaluation]
+        direction TB
+        
+        Expand --> IsHighway{Is Neighbor a<br>Highway Lane?}:::greenFill
+        
+        %% Branch: Highway Logic
+        IsHighway -- Y --> PrefDir{Moving in Preferred<br>Direction?}:::greenFill
+        PrefDir -- Y --> HwyDiscount[Apply<br>HIGHWAY_DISCOUNT<br>0.3x Cost]:::greenFill
+        PrefDir -- No --> HwyPenalty[Apply<br>HIGHWAY_WRONG_WAY_PENALTY<br>+50.0 Cost]:::redFill
+        
+        %% Branch: Turn Logic
+        IsHighway -- N --> IsTurn{Is Movement a Turn?}:::greenFill
+        IsTurn -- Yes --> TurnPenalty[Add<br>TURN_PENALTY<br>+3.0 Cost]:::redFill
+        
+        %% Branch: Blocked/Wait Logic
+        IsTurn -- No --> IsTempBlocked{Is Neighbor Cell<br>Temporarily Blocked?}:::greenFill
+        IsTempBlocked -- Yes --> ConsiderWait{Consider 'Stay Put'<br>Wait?}:::greenFill
+        ConsiderWait -- Yes --> WaitPenalty[Apply WAIT_PENALTY<br>+1.1 Cost,<br>Increment wait_count]:::redFill
+        ConsiderWait -- No --> BlockedCost[Standard Blocked Cell<br>High Cost]:::redFill
+        
+        %% Branch: Occupied Logic
+        IsTempBlocked -- No --> IsOccupied{Is Neighbor<br>occupied by<br>another Robot Soft<br>Obstacle?}:::greenFill
+        IsOccupied -- Yes --> SoftAvoid[Add<br>SOFT_AVOIDANCE Cost<br>+8.0 Cost]:::redFill
+        
+        %% Convergence Point: Calculate Costs
+        HwyDiscount --> CalcTotal[Calculate Total<br>G-Cost & H-Cost]:::blueFill
+        HwyPenalty --> CalcTotal
+        TurnPenalty --> CalcTotal
+        WaitPenalty --> CalcTotal
+        BlockedCost --> CalcTotal
+        SoftAvoid --> CalcTotal
+        IsOccupied -- No --> CalcTotal
+        
+        %% Path Evaluation
+        CalcTotal --> IsBetter{Is New Path<br>Better?<br>Lower G-Cost}:::greenFill
+        
+        IsBetter -- Yes --> Update[Update/Add Neighbor<br>to Open Set with<br>new Cost & Parent]:::blueFill
+    end
+
+    %% --- Feedback Loops ---
+    %% These arrows go back to the main loop start
+    IsBetter -- No --> IsEmpty
+    Update --> IsEmpty
   ```
 
 ### **The Math: Battery-Weighted A\***
@@ -59,23 +114,31 @@ Where:
 * $P(b)$: Exponential penalty based on current battery charge level ($100 - b$).
 
 
-## **📂 Project Structure**
+<div align="center">
 
-A clean architecture separates the simulation engine from the logical core.  
-📂 Project Root  
-├── 📂 core/  
-│   ├── 🐍 a_star.py          # The Brain: Pathfinding logic  
-│   ├── 🐍 agent.py           # The Body: Robot state machine  
-│   └── 🐍 battery.py         # The Heart: Power management system  
-├── 📂 assets/  
-│   ├── 📦 shelf_model.obj    # 3D assets for Ursina  
-│   └── 🤖 robot_texture.png  
-├── 📄 main.py                # Entry point (Simulation Loop)  
-├── 📄 warehouse_layout.txt   # Configurable map file  
-└── 📄 requirements.txt       # Dependencies
+## 📂 Project Structure
 
-## **🚀 Getting Started**
+<div align="left">
+<pre>
+📂 AIPathFinder
+├── 📂 core                     - Core algorithms (Pathfinding logic)
+├── 📂 entities                 - Game objects (Robots, Shelves, Chargers)
+├── 📂 models                   - 3D Assets (.obj/.glb models)
+├── 📂 textures                 - Visual assets and skins
+├── 📂 cloud_logs               - Telemetry logs for Google Cloud
+├── 📄 main.py                  - Main Simulation Entry Point
+├── 📄 mainUI.py                - User Interface & Menu System
+├── 📄 warehouse_layout.txt     - Warehouse Grid Configuration
+├── 📄 default_layout.txt       - Backup Layout
+├── 📄 cloud_telemetry.json     - Real-time Data Sync
+├── 📄 GOOGLE_CLOUD_Features.md - Cloud Documentation
+└── 📄 requirements.txt         - Dependencies
+</pre>
+</div>
 
+</div>
+
+## **🚀 Getting Started** <a name="installation-steps"></a>
 ### **Prerequisites**
 
 * Python 3.10+  
@@ -93,7 +156,8 @@ A clean architecture separates the simulation engine from the logical core.
 3. **Run the simulation:**  
    ```python main.py```
 
- 
+
+
 # Warehouse Layout Map  
 **X** = Shelf, **#** = Charger, **T** = Truck, **.** = Empty Aisle
 ```
@@ -102,9 +166,9 @@ A clean architecture separates the simulation engine from the logical core.
 ......................
 ......................
 ..XXXX.XXX..XXX.XXXX..
-..XXXX.XXX..XXX.XXXX..   
+..XXXX.XXX..XXX.XXXX..
 ......................
-......................   
+......................
 ..XXXX.XXX..XXX.XXXX..
 ..XXXX.XXX..XXX.XXXX..
 ......................
@@ -123,19 +187,27 @@ A clean architecture separates the simulation engine from the logical core.
 ......................
 ```
 
+
 ## **👥 The Team**
 
-* **Shlok** \- *Lead Developer / Algorithm Design*  
-* **Vishva** \- *3D Modeling / Environment Design*  
-* **Jashn** \- *Documentation / Research*
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/shlok377"><img src="https://github.com/shlok377.png" width="100px;" alt=""/><br /><sub><b>Shlok</b></sub></a><br />Algorithm Lead</td>
+    <td align="center"><a href="https://github.com/vishva-19"><img src="https://github.com/vishva-19.png" width="100px;" alt=""/><br /><sub><b>Vishva</b></sub></a><br />3D Design</td>
+    <td align="center"><a href="https://github.com/JJstartscoding"><img src="https://github.com/JJstartscoding.png" width="100px;" alt=""/><br /><sub><b>Jashn</b></sub></a><br />Research</td>
+  </tr>
+</table>
 
 <p align="center"\>  
 <small\>  
 ¹ <i\>References: Industry benchmarks suggest 5-20% downtime in autonomous fleets due to power management and navigation bottlenecks (PatentPC 2024; CaPow Energy Research 2025).</i\>  
-<a href="\#-project-name-ai-multi-agent-warehouse-optimizer"\>(back to top)</a\>  
-</p\>
+</p>
+<p align="center">(<a href="#readme-top">back to top</a>)</p>
 
-</small\>
+
+
+
+
 
 
 
