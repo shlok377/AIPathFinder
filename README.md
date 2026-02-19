@@ -3,7 +3,7 @@
 <div align="center"\>
 <img src="https://github.com/shlok377/AIPathFinder/blob/master/img/logo.png?raw=true" width="500px;" alt=""/>
     
-# **Astra: Advanced A*** **Multi-Agent Warehouse Optimizer**
+# **Astra: Advanced A*** **Multi-Agent Warehouse Pathfinding Optimizer**
 
 ### **National Level Hackathon Submission • Google Collaboration**
 
@@ -206,6 +206,7 @@ Where:
     <img src="https://github.com/shlok377/AIPathFinder/blob/master/img/ratings.png?raw=true" alt=""/>
 </p>
 <p align="center">(<a href="#readme-top">back to top</a>)</p>
+
 
 
 
