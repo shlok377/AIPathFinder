@@ -21,12 +21,7 @@ Modern automated warehouses lose an average of **5% to 20% operational efficienc
 
 | 🏗️ 3D Warehouse Overview | 🤖 Robot Navigation Logic |
 | :---- | :---- |
-<video width="400" controls loop autoplay muted>
-  <source src="img/robot_nav_logic.mp4" type="video/mp4">
-</video>
-<video width="400" controls loop autoplay muted>
-  <source src="img/warehouse_layout.mp4" type="video/mp4">
-</video>
+| <video autoplay loop muted><source src="img/warehouse_layout.mp4"></video> | <video autoplay loop muted><source src="img/robot_nav_logic.mp4"></video> |
 
 ## **⚡ Key Features**
 
