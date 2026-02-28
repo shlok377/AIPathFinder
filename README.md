@@ -23,11 +23,9 @@ Modern automated warehouses lose an average of **5% to 20% operational efficienc
 | :---- | :---- |
 <video width="400" controls loop autoplay muted>
   <source src="img/robot_nav_logic.mp4" type="video/mp4">
-  Your browser does not support the video tag.
 </video>
 <video width="400" controls loop autoplay muted>
   <source src="img/warehouse_layout.mp4" type="video/mp4">
-  Your browser does not support the video tag.
 </video>
 
 ## **⚡ Key Features**
@@ -212,6 +210,7 @@ Where:
     <img src="https://github.com/shlok377/AIPathFinder/blob/master/img/ratings.png?raw=true" alt=""/>
 </p>
 <p align="center">(<a href="#readme-top">back to top</a>)</p>
+
 
 
 
